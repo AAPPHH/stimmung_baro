@@ -1,5 +1,6 @@
 import streamlit as st
 import duckdb
+import motherduck  # noqa: F401 — registers md: protocol with duckdb
 import hashlib
 import smtplib
 import pandas as pd
@@ -21,13 +22,7 @@ def get_db():
     if "db" not in st.session_state:
         token = secret("MOTHERDUCK_TOKEN")
         if token:
-            conn = duckdb.connect()
-            conn.execute("INSTALL motherduck")
-            conn.execute("LOAD motherduck")
-            conn.execute(f"SET motherduck_token = '{token}'")
-            conn.execute("ATTACH 'md:stimmung'")
-            conn.execute("USE stimmung")
-            st.session_state.db = conn
+            st.session_state.db = duckdb.connect(f"md:stimmung?motherduck_token={token}")
         else:
             st.session_state.db = duckdb.connect("stimmung_local.duckdb")
         _init_schema(st.session_state.db)
