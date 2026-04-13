@@ -1,6 +1,4 @@
 streamlit>=1.30
 duckdb>=0.10
-httpx>=0.25
+motherduck>=0.10
 pandas
-cryptography>=42.0
-plotly>=5.18

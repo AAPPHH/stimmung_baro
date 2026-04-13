@@ -1,4 +1,7 @@
 /.claude
-/stimmung.duckdb
-/stimmung.duckdb.wal
-/stimmung_baro.duckdb
+*.duckdb
+*.duckdb.wal
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.env

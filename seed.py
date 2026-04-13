@@ -1,92 +1,87 @@
-"""
-Seed-Script: Füllt die DuckDB mit realistischen Testdaten.
-3 Gruppen, je 5 Pseudonyme, 6 Wochen historische Daten.
-"""
-
 import duckdb
-import json
 import hashlib
 import random
+import os
 from datetime import datetime, timedelta
-from pathlib import Path
-
-DB_PATH = Path(__file__).parent / "stimmung_baro.duckdb"
-
-SALT = "stimmungsbarometer_2025"
 
 GRUPPEN = {
-    "Gruppe1": {
-        "trend": "stabil_gut",  # 3.5-4.5
+    "Alpha": {
+        "trend": "stabil_gut",
         "pseudonyme": ["Roter Falke", "Blauer Wolf", "Goldener Adler", "Stiller Luchs", "Flinker Otter"],
     },
-    "Gruppe2": {
-        "trend": "abwärtstrend",  # 4.0 → 2.5
+    "Beta": {
+        "trend": "abwaerts",
         "pseudonyme": ["Wilder Panther", "Kluger Rabe", "Tapferer Bär", "Schneller Fuchs", "Mutiger Hirsch"],
     },
-    "Gruppe3": {
-        "trend": "mittel",  # 2.8-3.5
+    "Gamma": {
+        "trend": "mittel",
         "pseudonyme": ["Bunter Papagei", "Leiser Gecko", "Cooler Delfin", "Sanfter Kolibri", "Frecher Tiger"],
     },
 }
 
 FREITEXT_POSITIV = [
     "Teamarbeit läuft super, alle ziehen an einem Strang.",
-    "Gute Woche, Projekte sind im Zeitplan und die Stimmung ist top.",
+    "Gute Woche, Projekte sind im Zeitplan.",
     "Kommunikation im Team hat sich deutlich verbessert.",
+    "Macht gerade richtig Spaß hier zu arbeiten!",
+    "Sehr produktive Woche, gutes Teamgefühl.",
 ]
 
 FREITEXT_NEUTRAL = [
     "Alles okay, nichts Besonderes zu berichten.",
     "Laufende Projekte gehen voran, ein paar Kleinigkeiten könnten besser sein.",
     "Ganz in Ordnung, manchmal etwas unklare Zuständigkeiten.",
+    "Solide Woche, weder besonders gut noch schlecht.",
 ]
 
 FREITEXT_NEGATIV = [
     "Zu viel Druck von oben, Deadlines sind unrealistisch.",
     "Kommunikation ist schlecht, wichtige Infos kommen zu spät.",
-    "Frustrierend — Entscheidungen werden ohne uns getroffen, Motivation sinkt.",
+    "Frustrierend — Entscheidungen werden ohne uns getroffen.",
+    "Motivation sinkt, Workload ist nicht tragbar.",
+    "Fühle mich nicht gehört, Feedback wird ignoriert.",
 ]
 
 WORKLOAD_OPTIONS = ["zu_wenig", "passt", "zu_viel"]
 
 
-def make_anon_token(name: str) -> str:
-    return hashlib.sha256(f"{SALT}:{name}".encode()).hexdigest()[:12]
+def hash_pseudo(pseudo):
+    return hashlib.sha256(pseudo.strip().encode()).hexdigest()
 
 
-def stimmung_for(trend: str, week_index: int) -> int:
-    """Generiert Stimmungswert (1-5) je nach Gruppentrend und Woche."""
+def stimmung_for(trend, week_idx):
     if trend == "stabil_gut":
         base = random.uniform(3.5, 4.5)
-    elif trend == "abwärtstrend":
-        # Woche 0 = vor 5 Wochen (gut), Woche 5 = aktuell (schlecht)
-        base = 4.2 - (week_index * 0.35) + random.uniform(-0.3, 0.3)
-    else:  # mittel
+    elif trend == "abwaerts":
+        base = 4.2 - (week_idx * 0.35) + random.uniform(-0.3, 0.3)
+    else:
         base = random.uniform(2.8, 3.5)
     return max(1, min(5, round(base)))
 
 
-def kommunikation_for(trend: str, week_index: int) -> int:
+def kommunikation_for(trend, week_idx):
     if trend == "stabil_gut":
         base = random.uniform(3.5, 4.5)
-    elif trend == "abwärtstrend":
-        base = 4.0 - (week_index * 0.3) + random.uniform(-0.3, 0.3)
+    elif trend == "abwaerts":
+        base = 4.0 - (week_idx * 0.3) + random.uniform(-0.3, 0.3)
     else:
         base = random.uniform(2.5, 3.5)
     return max(1, min(5, round(base)))
 
 
-def workload_for(trend: str, week_index: int) -> str:
+def workload_for(trend, week_idx):
     if trend == "stabil_gut":
         return random.choice(["passt", "passt", "passt", "zu_viel"])
-    elif trend == "abwärtstrend":
-        weights = ["passt"] * max(1, 4 - week_index) + ["zu_viel"] * min(4, 1 + week_index)
+    elif trend == "abwaerts":
+        weights = ["passt"] * max(1, 4 - week_idx) + ["zu_viel"] * min(4, 1 + week_idx)
         return random.choice(weights)
     else:
         return random.choice(WORKLOAD_OPTIONS)
 
 
-def freitext_for(stimmung: int) -> str:
+def freitext_for(stimmung):
+    if random.random() > 0.7:
+        return None
     if stimmung >= 4:
         return random.choice(FREITEXT_POSITIV)
     elif stimmung >= 3:
@@ -95,120 +90,84 @@ def freitext_for(stimmung: int) -> str:
         return random.choice(FREITEXT_NEGATIV)
 
 
-def sentiment_for(stimmung: int) -> tuple[float, str]:
-    if stimmung >= 4:
-        score = round(random.uniform(0.4, 0.9), 2)
-        return score, "positiv"
-    elif stimmung >= 3:
-        score = round(random.uniform(-0.2, 0.3), 2)
-        return score, "neutral"
-    else:
-        score = round(random.uniform(-0.8, -0.2), 2)
-        return score, "negativ"
-
-
-THEMEN_MAP = {
-    "positiv": [["Teamwork", "Motivation"], ["Projektfortschritt"], ["Kommunikation", "Zusammenhalt"]],
-    "neutral": [["Prozesse"], ["Zuständigkeiten", "Organisation"], ["Alltag"]],
-    "negativ": [["Deadlines", "Druck"], ["Kommunikation", "Frustration"], ["Führung", "Motivation"]],
-}
-
-
-def themen_for(sentiment_label: str) -> list[str]:
-    return random.choice(THEMEN_MAP[sentiment_label])
-
-
-def zusammenfassung_for(stimmung: int) -> str:
-    if stimmung >= 4:
-        return random.choice([
-            "Positive Stimmung, Team läuft gut.",
-            "Zufriedenheit mit Teamarbeit und Fortschritt.",
-        ])
-    elif stimmung >= 3:
-        return random.choice([
-            "Neutrale Lage, kleinere Verbesserungspotenziale.",
-            "Alles im Rahmen, keine größeren Probleme.",
-        ])
-    else:
-        return random.choice([
-            "Unzufriedenheit mit Arbeitsbelastung und Kommunikation.",
-            "Frustration über mangelnde Einbindung in Entscheidungen.",
-        ])
-
-
 def seed():
-    db = duckdb.connect(str(DB_PATH))
+    token = os.environ.get("MOTHERDUCK_TOKEN", "")
+    if token:
+        db = duckdb.connect(f"md:stimmung?motherduck_token={token}")
+    else:
+        db = duckdb.connect("stimmung_local.duckdb")
 
-    # Schema sicherstellen
-    db.execute("CREATE SEQUENCE IF NOT EXISTS seq_pulse START 1;")
+    db.execute("CREATE SEQUENCE IF NOT EXISTS seq_pulse START 1")
     db.execute("""
         CREATE TABLE IF NOT EXISTS pulse_checks (
-            id              INTEGER PRIMARY KEY DEFAULT nextval('seq_pulse'),
-            submitted_at    TIMESTAMP DEFAULT current_timestamp,
-            anon_token      VARCHAR,
-            gruppe          VARCHAR,
-            stimmung        INTEGER,
-            workload        VARCHAR,
-            kommunikation   INTEGER,
-            freitext        VARCHAR,
-            sentiment_score FLOAT,
-            sentiment_label VARCHAR,
-            themen          VARCHAR,
-            zusammenfassung VARCHAR
-        );
+            id INTEGER PRIMARY KEY DEFAULT nextval('seq_pulse'),
+            submitted_at TIMESTAMP DEFAULT current_timestamp,
+            anon_token VARCHAR,
+            gruppe VARCHAR,
+            stimmung INTEGER,
+            workload VARCHAR,
+            kommunikation INTEGER,
+            freitext VARCHAR
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS teilnehmer (
+            pseudo VARCHAR,
+            gruppe VARCHAR,
+            email VARCHAR,
+            active BOOLEAN DEFAULT true,
+            PRIMARY KEY (pseudo, gruppe)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS reminder_log (
+            sent_at TIMESTAMP DEFAULT current_timestamp,
+            gruppe VARCHAR,
+            count INTEGER
+        )
     """)
 
-    # Bestehende Testdaten löschen
     db.execute("DELETE FROM pulse_checks")
+    db.execute("DELETE FROM teilnehmer")
 
-    # 6 Wochen, immer Montag
     today = datetime.now()
-    # Letzten Montag finden
     last_monday = today - timedelta(days=today.weekday())
-    mondays = [last_monday - timedelta(weeks=w) for w in range(5, -1, -1)]  # älteste zuerst
+    mondays = [last_monday - timedelta(weeks=w) for w in range(5, -1, -1)]
 
     row_count = 0
     for gruppe_name, config in GRUPPEN.items():
         trend = config["trend"]
+        for pseudo in config["pseudonyme"]:
+            email = f"{pseudo.lower().replace(' ', '.')}@example.com"
+            db.execute(
+                "INSERT INTO teilnehmer (pseudo, gruppe, email) VALUES (?, ?, ?)",
+                [pseudo, gruppe_name, email]
+            )
+
         for week_idx, monday in enumerate(mondays):
             for pseudo in config["pseudonyme"]:
-                # Nicht jeder füllt jede Woche aus (80% Chance)
                 if random.random() > 0.85:
                     continue
-
-                anon_token = make_anon_token(pseudo)
+                token = hash_pseudo(pseudo)
                 stimmung = stimmung_for(trend, week_idx)
                 komm = kommunikation_for(trend, week_idx)
                 wl = workload_for(trend, week_idx)
                 text = freitext_for(stimmung)
-                sent_score, sent_label = sentiment_for(stimmung)
-                themen = themen_for(sent_label)
-                zusammenfassung = zusammenfassung_for(stimmung)
-
-                # Timestamp: Montag + zufällige Uhrzeit
                 ts = monday.replace(
                     hour=random.randint(8, 17),
                     minute=random.randint(0, 59),
-                    second=0,
-                    microsecond=0,
+                    second=0, microsecond=0,
                 )
-
                 db.execute(
                     """INSERT INTO pulse_checks
-                       (submitted_at, anon_token, gruppe, stimmung, workload, kommunikation,
-                        freitext, sentiment_score, sentiment_label, themen, zusammenfassung)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [
-                        ts, anon_token, gruppe_name, stimmung, wl, komm,
-                        text, sent_score, sent_label,
-                        json.dumps(themen, ensure_ascii=False),
-                        zusammenfassung,
-                    ],
+                       (submitted_at, anon_token, gruppe, stimmung, workload, kommunikation, freitext)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    [ts, token, gruppe_name, stimmung, wl, komm, text]
                 )
                 row_count += 1
 
     db.close()
-    print(f"Seed abgeschlossen: {row_count} Einträge über 6 Wochen für 3 Gruppen.")
+    print(f"Seed: {row_count} Pulse-Checks, {sum(len(c['pseudonyme']) for c in GRUPPEN.values())} Teilnehmer.")
 
 
 if __name__ == "__main__":
