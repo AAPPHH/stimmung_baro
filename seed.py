@@ -19,29 +19,6 @@ GRUPPEN = {
     },
 }
 
-FREITEXT_POSITIV = [
-    "Teamarbeit läuft super, alle ziehen an einem Strang.",
-    "Gute Woche, Projekte sind im Zeitplan.",
-    "Kommunikation im Team hat sich deutlich verbessert.",
-    "Macht gerade richtig Spaß hier zu arbeiten!",
-    "Sehr produktive Woche, gutes Teamgefühl.",
-]
-
-FREITEXT_NEUTRAL = [
-    "Alles okay, nichts Besonderes zu berichten.",
-    "Laufende Projekte gehen voran, ein paar Kleinigkeiten könnten besser sein.",
-    "Ganz in Ordnung, manchmal etwas unklare Zuständigkeiten.",
-    "Solide Woche, weder besonders gut noch schlecht.",
-]
-
-FREITEXT_NEGATIV = [
-    "Zu viel Druck von oben, Deadlines sind unrealistisch.",
-    "Kommunikation ist schlecht, wichtige Infos kommen zu spät.",
-    "Frustrierend — Entscheidungen werden ohne uns getroffen.",
-    "Motivation sinkt, Workload ist nicht tragbar.",
-    "Fühle mich nicht gehört, Feedback wird ignoriert.",
-]
-
 WORKLOAD_OPTIONS = ["zu_wenig", "passt", "zu_viel"]
 
 
@@ -79,17 +56,6 @@ def workload_for(trend, week_idx):
         return random.choice(WORKLOAD_OPTIONS)
 
 
-def freitext_for(stimmung):
-    if random.random() > 0.7:
-        return None
-    if stimmung >= 4:
-        return random.choice(FREITEXT_POSITIV)
-    elif stimmung >= 3:
-        return random.choice(FREITEXT_NEUTRAL)
-    else:
-        return random.choice(FREITEXT_NEGATIV)
-
-
 def seed():
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     conn.autocommit = True
@@ -103,8 +69,7 @@ def seed():
             gruppe VARCHAR,
             stimmung INTEGER,
             workload VARCHAR,
-            kommunikation INTEGER,
-            freitext TEXT
+            kommunikation INTEGER
         )
     """)
     cur.execute("""
@@ -149,7 +114,6 @@ def seed():
                 stimmung = stimmung_for(trend, week_idx)
                 komm = kommunikation_for(trend, week_idx)
                 wl = workload_for(trend, week_idx)
-                text = freitext_for(stimmung)
                 ts = monday.replace(
                     hour=random.randint(8, 17),
                     minute=random.randint(0, 59),
@@ -157,9 +121,9 @@ def seed():
                 )
                 cur.execute(
                     """INSERT INTO pulse_checks
-                       (submitted_at, anon_token, gruppe, stimmung, workload, kommunikation, freitext)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                    [ts, token, gruppe_name, stimmung, wl, komm, text]
+                       (submitted_at, anon_token, gruppe, stimmung, workload, kommunikation)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    [ts, token, gruppe_name, stimmung, wl, komm]
                 )
                 row_count += 1
 

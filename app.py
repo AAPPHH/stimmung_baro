@@ -45,8 +45,7 @@ def _init_schema(conn):
             gruppe VARCHAR,
             stimmung INTEGER,
             workload VARCHAR,
-            kommunikation INTEGER,
-            freitext TEXT
+            kommunikation INTEGER
         )
     """)
     cur.execute("""
@@ -138,14 +137,12 @@ def page_checkin():
         help="1 = schlecht, 5 = super"
     )
 
-    freitext = st.text_area("Möchtest du noch etwas loswerden? (optional)")
-
     if st.button("Absenden", type="primary"):
         token = hash_pseudo(pseudo)
         cur.execute(
-            """INSERT INTO pulse_checks (anon_token, gruppe, stimmung, workload, kommunikation, freitext)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
-            [token, gruppe, stimmung, wl_map[workload], kommunikation, freitext or None]
+            """INSERT INTO pulse_checks (anon_token, gruppe, stimmung, workload, kommunikation)
+               VALUES (%s, %s, %s, %s, %s)""",
+            [token, gruppe, stimmung, wl_map[workload], kommunikation]
         )
         cur.close()
         st.success("Danke für dein Feedback! 🎉")
@@ -172,7 +169,7 @@ def page_gruppen_dashboard():
     gruppe = st.selectbox("Gruppe wählen", gruppen, index=idx)
 
     cur.execute("""
-        SELECT submitted_at, stimmung, kommunikation, workload, freitext
+        SELECT submitted_at, stimmung, kommunikation, workload
         FROM pulse_checks WHERE gruppe = %s ORDER BY submitted_at
     """, [gruppe])
     cols = [desc[0] for desc in cur.description]
@@ -216,15 +213,6 @@ def page_gruppen_dashboard():
     wl_counts = df["workload"].value_counts().rename(index={"zu_wenig": "Zu wenig", "passt": "Passt", "zu_viel": "Zu viel"})
     st.bar_chart(wl_counts)
 
-    st.subheader("Freitext-Kommentare (letzte 2 Wochen)")
-    cutoff = datetime.now() - timedelta(weeks=2)
-    recent = df[pd.to_datetime(df["submitted_at"]) >= cutoff]
-    comments = recent[recent["freitext"].notna() & (recent["freitext"] != "")]["freitext"].tolist()
-    if comments:
-        for c in comments:
-            st.markdown(f"- {c}")
-    else:
-        st.info("Keine Kommentare in den letzten 2 Wochen.")
 
 
 def page_gesamt_dashboard():
@@ -235,7 +223,7 @@ def page_gesamt_dashboard():
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        SELECT gruppe, submitted_at, stimmung, kommunikation, workload, freitext
+        SELECT gruppe, submitted_at, stimmung, kommunikation, workload
         FROM pulse_checks ORDER BY submitted_at
     """)
     cols = [desc[0] for desc in cur.description]
@@ -298,15 +286,6 @@ def page_gesamt_dashboard():
     else:
         st.info("Keine Teilnehmer in der Verwaltung hinterlegt.")
 
-    st.subheader("Freitext-Kommentare (alle Gruppen, letzte 2 Wochen)")
-    cutoff = datetime.now() - timedelta(weeks=2)
-    recent = df[df["submitted_at"] >= cutoff]
-    comments = recent[recent["freitext"].notna() & (recent["freitext"] != "")]["freitext"].tolist()
-    if comments:
-        for c in comments:
-            st.markdown(f"- {c}")
-    else:
-        st.info("Keine Kommentare.")
 
 
 def page_verwaltung():
