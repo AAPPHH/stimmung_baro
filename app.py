@@ -1,6 +1,5 @@
 import streamlit as st
-import duckdb
-import motherduck  # noqa: F401 — registers md: protocol with duckdb
+import psycopg2
 import hashlib
 import smtplib
 import pandas as pd
@@ -18,34 +17,39 @@ def secret(key, default=""):
         return default
 
 
+@st.cache_resource
+def get_conn():
+    conn = psycopg2.connect(st.secrets["DATABASE_URL"])
+    conn.autocommit = True
+    return conn
+
+
 def get_db():
-    if "db" not in st.session_state:
-        token = secret("MOTHERDUCK_TOKEN")
-        if token:
-            st.session_state.db = duckdb.connect(f"md:stimmung?motherduck_token={token}")
-        else:
-            st.session_state.db = duckdb.connect("stimmung_local.duckdb")
-        _init_schema(st.session_state.db)
-    return st.session_state.db
+    conn = get_conn()
+    try:
+        conn.cursor().execute("SELECT 1")
+    except Exception:
+        st.cache_resource.clear()
+        conn = get_conn()
+    _init_schema(conn)
+    return conn
 
 
-def _init_schema(db):
-    db.execute("""
-        CREATE SEQUENCE IF NOT EXISTS seq_pulse START 1
-    """)
-    db.execute("""
+def _init_schema(conn):
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS pulse_checks (
-            id INTEGER PRIMARY KEY DEFAULT nextval('seq_pulse'),
-            submitted_at TIMESTAMP DEFAULT current_timestamp,
+            id SERIAL PRIMARY KEY,
+            submitted_at TIMESTAMP DEFAULT NOW(),
             anon_token VARCHAR,
             gruppe VARCHAR,
             stimmung INTEGER,
             workload VARCHAR,
             kommunikation INTEGER,
-            freitext VARCHAR
+            freitext TEXT
         )
     """)
-    db.execute("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS teilnehmer (
             pseudo VARCHAR,
             gruppe VARCHAR,
@@ -54,13 +58,14 @@ def _init_schema(db):
             PRIMARY KEY (pseudo, gruppe)
         )
     """)
-    db.execute("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS reminder_log (
-            sent_at TIMESTAMP DEFAULT current_timestamp,
+            sent_at TIMESTAMP DEFAULT NOW(),
             gruppe VARCHAR,
             count INTEGER
         )
     """)
+    cur.close()
 
 
 def hash_pseudo(pseudo):
@@ -88,12 +93,14 @@ def admin_check():
 
 def page_checkin():
     st.title("📋 Stimmungs-Check-In")
-    db = get_db()
+    conn = get_db()
+    cur = conn.cursor()
     params = st.query_params
     gruppe_param = params.get("gruppe", "")
     pseudo_param = params.get("pseudo", "")
 
-    gruppen = [r[0] for r in db.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe").fetchall()]
+    cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
+    gruppen = [r[0] for r in cur.fetchall()]
     if gruppe_param and gruppe_param in gruppen:
         gruppe = gruppe_param
         st.info(f"Gruppe: **{gruppe}**")
@@ -135,22 +142,25 @@ def page_checkin():
 
     if st.button("Absenden", type="primary"):
         token = hash_pseudo(pseudo)
-        db.execute(
+        cur.execute(
             """INSERT INTO pulse_checks (anon_token, gruppe, stimmung, workload, kommunikation, freitext)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s)""",
             [token, gruppe, stimmung, wl_map[workload], kommunikation, freitext or None]
         )
+        cur.close()
         st.success("Danke für dein Feedback! 🎉")
         st.balloons()
 
 
 def page_gruppen_dashboard():
     st.title("📊 Gruppen-Dashboard")
-    db = get_db()
+    conn = get_db()
+    cur = conn.cursor()
     params = st.query_params
     gruppe_param = params.get("gruppe", "")
 
-    gruppen = [r[0] for r in db.execute("SELECT DISTINCT gruppe FROM pulse_checks ORDER BY gruppe").fetchall()]
+    cur.execute("SELECT DISTINCT gruppe FROM pulse_checks ORDER BY gruppe")
+    gruppen = [r[0] for r in cur.fetchall()]
     if not gruppen:
         st.info("Noch keine Daten vorhanden.")
         return
@@ -161,10 +171,13 @@ def page_gruppen_dashboard():
         idx = 0
     gruppe = st.selectbox("Gruppe wählen", gruppen, index=idx)
 
-    df = db.execute("""
+    cur.execute("""
         SELECT submitted_at, stimmung, kommunikation, workload, freitext
-        FROM pulse_checks WHERE gruppe = ? ORDER BY submitted_at
-    """, [gruppe]).fetchdf()
+        FROM pulse_checks WHERE gruppe = %s ORDER BY submitted_at
+    """, [gruppe])
+    cols = [desc[0] for desc in cur.description]
+    rows = cur.fetchall()
+    df = pd.DataFrame(rows, columns=cols)
 
     if df.empty:
         st.info("Keine Daten für diese Gruppe.")
@@ -219,11 +232,15 @@ def page_gesamt_dashboard():
     if not admin_check():
         return
 
-    db = get_db()
-    df = db.execute("""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
         SELECT gruppe, submitted_at, stimmung, kommunikation, workload, freitext
         FROM pulse_checks ORDER BY submitted_at
-    """).fetchdf()
+    """)
+    cols = [desc[0] for desc in cur.description]
+    rows = cur.fetchall()
+    df = pd.DataFrame(rows, columns=cols)
 
     if df.empty:
         st.info("Noch keine Daten vorhanden.")
@@ -267,7 +284,9 @@ def page_gesamt_dashboard():
             st.success("Alle Gruppen stabil oder im Aufwärtstrend.")
 
     st.subheader("Teilnehmerzahl & Antwortrate")
-    teilnehmer_df = db.execute("SELECT gruppe, COUNT(*) as total FROM teilnehmer WHERE active = true GROUP BY gruppe").fetchdf()
+    cur.execute("SELECT gruppe, COUNT(*) as total FROM teilnehmer WHERE active = true GROUP BY gruppe")
+    teilnehmer_cols = [desc[0] for desc in cur.description]
+    teilnehmer_df = pd.DataFrame(cur.fetchall(), columns=teilnehmer_cols)
     if not teilnehmer_df.empty:
         letzte_woche = datetime.now() - timedelta(weeks=1)
         antworten = df[df["submitted_at"] >= letzte_woche].groupby("gruppe")["stimmung"].count().reset_index()
@@ -295,7 +314,8 @@ def page_verwaltung():
     if not admin_check():
         return
 
-    db = get_db()
+    conn = get_db()
+    cur = conn.cursor()
 
     st.subheader("Teilnehmer hinzufügen")
     with st.form("add_teilnehmer"):
@@ -309,19 +329,22 @@ def page_verwaltung():
         if st.form_submit_button("Hinzufügen"):
             if pseudo and gruppe and email:
                 try:
-                    db.execute(
-                        "INSERT INTO teilnehmer (pseudo, gruppe, email) VALUES (?, ?, ?)",
+                    cur.execute(
+                        "INSERT INTO teilnehmer (pseudo, gruppe, email) VALUES (%s, %s, %s)",
                         [pseudo.strip(), gruppe.strip(), email.strip()]
                     )
                     st.success(f"**{pseudo}** zur Gruppe **{gruppe}** hinzugefügt.")
                     st.rerun()
-                except duckdb.ConstraintException:
+                except psycopg2.errors.UniqueViolation:
+                    conn.rollback()
                     st.error("Teilnehmer existiert bereits in dieser Gruppe.")
             else:
                 st.warning("Alle Felder ausfüllen.")
 
     st.subheader("Teilnehmer-Liste")
-    teilnehmer = db.execute("SELECT pseudo, gruppe, email, active FROM teilnehmer ORDER BY gruppe, pseudo").fetchdf()
+    cur.execute("SELECT pseudo, gruppe, email, active FROM teilnehmer ORDER BY gruppe, pseudo")
+    cols = [desc[0] for desc in cur.description]
+    teilnehmer = pd.DataFrame(cur.fetchall(), columns=cols)
     if teilnehmer.empty:
         st.info("Keine Teilnehmer vorhanden.")
     else:
@@ -335,24 +358,26 @@ def page_verwaltung():
                     col2.write(row["email"])
                     if row["active"]:
                         if col3.button("Deaktivieren", key=f"deact_{row['pseudo']}_{row['gruppe']}"):
-                            db.execute(
-                                "UPDATE teilnehmer SET active = false WHERE pseudo = ? AND gruppe = ?",
+                            cur.execute(
+                                "UPDATE teilnehmer SET active = false WHERE pseudo = %s AND gruppe = %s",
                                 [row["pseudo"], row["gruppe"]]
                             )
                             st.rerun()
 
     st.subheader("Reminder senden")
-    reminder_gruppen = [r[0] for r in db.execute("SELECT DISTINCT gruppe FROM teilnehmer WHERE active = true ORDER BY gruppe").fetchall()]
+    cur.execute("SELECT DISTINCT gruppe FROM teilnehmer WHERE active = true ORDER BY gruppe")
+    reminder_gruppen = [r[0] for r in cur.fetchall()]
     if not reminder_gruppen:
         st.info("Keine aktiven Teilnehmer vorhanden.")
         return
 
     sel_gruppe = st.selectbox("Gruppe für Reminder", reminder_gruppen)
 
-    last_sent = db.execute(
-        "SELECT sent_at, count FROM reminder_log WHERE gruppe = ? ORDER BY sent_at DESC LIMIT 1",
+    cur.execute(
+        "SELECT sent_at, count FROM reminder_log WHERE gruppe = %s ORDER BY sent_at DESC LIMIT 1",
         [sel_gruppe]
-    ).fetchone()
+    )
+    last_sent = cur.fetchone()
     if last_sent:
         st.caption(f"Letzter Reminder: {last_sent[0].strftime('%d.%m.%Y %H:%M')} ({last_sent[1]} Mails)")
 
@@ -364,10 +389,11 @@ def page_verwaltung():
             st.error("GMAIL_USER, GMAIL_APP_PASS und APP_URL müssen in secrets konfiguriert sein.")
             return
 
-        empfaenger = db.execute(
-            "SELECT pseudo, email FROM teilnehmer WHERE gruppe = ? AND active = true",
+        cur.execute(
+            "SELECT pseudo, email FROM teilnehmer WHERE gruppe = %s AND active = true",
             [sel_gruppe]
-        ).fetchall()
+        )
+        empfaenger = cur.fetchall()
 
         sent_count = 0
         errors = []
@@ -399,8 +425,8 @@ def page_verwaltung():
             st.error(f"SMTP-Fehler: {e}")
             return
 
-        db.execute(
-            "INSERT INTO reminder_log (gruppe, count) VALUES (?, ?)",
+        cur.execute(
+            "INSERT INTO reminder_log (gruppe, count) VALUES (%s, %s)",
             [sel_gruppe, sent_count]
         )
         st.success(f"✅ {sent_count} Reminder an Gruppe **{sel_gruppe}** gesendet.")

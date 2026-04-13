@@ -1,4 +1,4 @@
-import duckdb
+import psycopg2
 import hashlib
 import random
 import os
@@ -91,26 +91,23 @@ def freitext_for(stimmung):
 
 
 def seed():
-    token = os.environ.get("MOTHERDUCK_TOKEN", "")
-    if token:
-        db = duckdb.connect(f"md:stimmung?motherduck_token={token}")
-    else:
-        db = duckdb.connect("stimmung_local.duckdb")
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn.autocommit = True
+    cur = conn.cursor()
 
-    db.execute("CREATE SEQUENCE IF NOT EXISTS seq_pulse START 1")
-    db.execute("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS pulse_checks (
-            id INTEGER PRIMARY KEY DEFAULT nextval('seq_pulse'),
-            submitted_at TIMESTAMP DEFAULT current_timestamp,
+            id SERIAL PRIMARY KEY,
+            submitted_at TIMESTAMP DEFAULT NOW(),
             anon_token VARCHAR,
             gruppe VARCHAR,
             stimmung INTEGER,
             workload VARCHAR,
             kommunikation INTEGER,
-            freitext VARCHAR
+            freitext TEXT
         )
     """)
-    db.execute("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS teilnehmer (
             pseudo VARCHAR,
             gruppe VARCHAR,
@@ -119,16 +116,16 @@ def seed():
             PRIMARY KEY (pseudo, gruppe)
         )
     """)
-    db.execute("""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS reminder_log (
-            sent_at TIMESTAMP DEFAULT current_timestamp,
+            sent_at TIMESTAMP DEFAULT NOW(),
             gruppe VARCHAR,
             count INTEGER
         )
     """)
 
-    db.execute("DELETE FROM pulse_checks")
-    db.execute("DELETE FROM teilnehmer")
+    cur.execute("DELETE FROM pulse_checks")
+    cur.execute("DELETE FROM teilnehmer")
 
     today = datetime.now()
     last_monday = today - timedelta(days=today.weekday())
@@ -139,8 +136,8 @@ def seed():
         trend = config["trend"]
         for pseudo in config["pseudonyme"]:
             email = f"{pseudo.lower().replace(' ', '.')}@example.com"
-            db.execute(
-                "INSERT INTO teilnehmer (pseudo, gruppe, email) VALUES (?, ?, ?)",
+            cur.execute(
+                "INSERT INTO teilnehmer (pseudo, gruppe, email) VALUES (%s, %s, %s)",
                 [pseudo, gruppe_name, email]
             )
 
@@ -158,15 +155,16 @@ def seed():
                     minute=random.randint(0, 59),
                     second=0, microsecond=0,
                 )
-                db.execute(
+                cur.execute(
                     """INSERT INTO pulse_checks
                        (submitted_at, anon_token, gruppe, stimmung, workload, kommunikation, freitext)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                     [ts, token, gruppe_name, stimmung, wl, komm, text]
                 )
                 row_count += 1
 
-    db.close()
+    cur.close()
+    conn.close()
     print(f"Seed: {row_count} Pulse-Checks, {sum(len(c['pseudonyme']) for c in GRUPPEN.values())} Teilnehmer.")
 
 
