@@ -64,10 +64,21 @@ CUSTOM_CSS = """
 [data-testid="stToolbar"] {display: none !important;}
 [data-testid="stDecoration"] {display: none;}
 
-[data-testid="stSidebar"] {display: block !important; visibility: visible !important; transform: none !important;}
-[data-testid="collapsedControl"] {display: none !important;}
-[data-testid="stSidebarCollapseButton"] {display: none !important;}
-[data-testid="stSidebarCollapsedControl"] {display: none !important;}
+section[data-testid="stSidebar"],
+section[data-testid="stSidebar"][aria-expanded="false"] {
+    transform: translateX(0) !important;
+    margin-left: 0 !important;
+    left: 0 !important;
+    visibility: visible !important;
+    min-width: 244px !important;
+    width: 244px !important;
+}
+section[data-testid="stSidebar"] button[kind="header"],
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] {
+    display: none !important;
+}
 
 .block-container {padding-top: 2.5rem; padding-bottom: 3rem; max-width: 1200px;}
 
