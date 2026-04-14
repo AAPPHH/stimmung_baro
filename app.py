@@ -1062,12 +1062,68 @@ def page_verwaltung():
         render_reminder_tab(conn, cur)
 
 
+def page_impressum():
+    st.markdown("# Impressum & Datenschutz")
+
+    st.markdown("## Impressum")
+    st.markdown("""
+**John Hamelmann**
+Hochschule Düsseldorf
+Münsterstraße 156
+40476 Düsseldorf
+
+E-Mail: jfhamelmann@gmail.com
+""")
+
+    st.markdown("### Kontext")
+    st.markdown(
+        "Studentisches Projekt im Rahmen des Studiengangs **Data Science (B.Sc.)** "
+        "an der Hochschule Düsseldorf. Betreut durch "
+        "**Prof. Dr. Dennis Müller** und **Prof. Dr. Dominik Austermann**."
+    )
+
+    st.divider()
+
+    st.markdown("## Datenschutzerklärung")
+
+    st.markdown("### Welche Daten werden erhoben")
+    st.markdown("""
+- **Vorname** (bei der Anmeldung)
+- **E-Mail-Adresse** (für den Versand des persönlichen Check-In-Links und wöchentlicher Erinnerungen)
+- **Pseudonym** (wird im Dashboard anstelle des Klarnamens angezeigt)
+- **Stimmungsdaten** (Stimmung, Workload, Kommunikation — gespeichert mit einem anonymen Hash des Pseudonyms, nicht mit Klarnamen oder E-Mail verknüpft)
+""")
+
+    st.markdown("### Zweck der Verarbeitung")
+    st.markdown(
+        "Die Daten werden ausschließlich für anonymes Team-Feedback im Rahmen "
+        "von Lehrveranstaltungen genutzt. Ziel ist, Stimmungstrends in Gruppen "
+        "sichtbar zu machen, nicht einzelne Personen zu bewerten."
+    )
+
+    st.markdown("### Speicherort")
+    st.markdown(
+        "Die Daten werden auf **Supabase** (PostgreSQL) in der **EU-Region** gespeichert. "
+        "Es erfolgt **keine Weitergabe an Dritte**."
+    )
+
+    st.markdown("### Löschung")
+    st.markdown(
+        "Auf Anfrage per E-Mail an **jfhamelmann@gmail.com** werden alle zu einer "
+        "E-Mail-Adresse gehörenden Daten unverzüglich gelöscht."
+    )
+
+    st.markdown("### Tracking")
+    st.markdown("Kein Tracking, keine Cookies, keine Analytics.")
+
+
 PAGES = {
     "Anmeldung": page_anmeldung,
     "Check-In": page_checkin,
     "Gruppen-Dashboard": page_gruppen_dashboard,
     "Gesamt-Dashboard": page_gesamt_dashboard,
     "Verwaltung": page_verwaltung,
+    "Impressum & Datenschutz": page_impressum,
 }
 
 st.set_page_config(page_title="Stimmungsbarometer", page_icon="🌡️", layout="wide", initial_sidebar_state="expanded")
