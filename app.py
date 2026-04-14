@@ -56,6 +56,24 @@ WORKLOAD_OPTIONS = [
     ("passt", "⚖️", "Passt"),
     ("zu_viel", "📈", "Zu viel"),
 ]
+WL_SCORE = {"zu_wenig": -1, "passt": 0, "zu_viel": 1}
+
+
+def wl_label(score):
+    if score <= -0.3:
+        return "Unterfordert"
+    if score >= 0.3:
+        return "Überlastet"
+    return "Ausgewogen"
+
+
+def wl_color(score):
+    a = abs(score)
+    if a < 0.3:
+        return "#10B981"
+    if a < 0.6:
+        return "#F59E0B"
+    return "#EF4444"
 
 CUSTOM_CSS = """
 <style>
@@ -590,22 +608,27 @@ def page_gruppen_dashboard():
 
     df["submitted_at"] = pd.to_datetime(df["submitted_at"])
     df["woche"] = df["submitted_at"].dt.to_period("W").dt.start_time
+    df["wl_score"] = df["workload"].map(WL_SCORE)
 
     weekly = df.groupby("woche").agg(
         stimmung_avg=("stimmung", "mean"),
         kommunikation_avg=("kommunikation", "mean"),
+        wl_avg=("wl_score", "mean"),
         count=("stimmung", "count")
     ).reset_index()
 
     current = weekly.iloc[-1] if len(weekly) > 0 else None
     previous = weekly.iloc[-2] if len(weekly) > 1 else None
 
-    k1, k2, k3 = st.columns(3)
+    k1, k2, k3, k4 = st.columns(4)
     delta_s = (current["stimmung_avg"] - previous["stimmung_avg"]) if previous is not None else None
     delta_k = (current["kommunikation_avg"] - previous["kommunikation_avg"]) if previous is not None else None
+    delta_wl = (current["wl_avg"] - previous["wl_avg"]) if previous is not None else None
+    wl_cur = float(current["wl_avg"])
     kpi_card(k1, f"{current['stimmung_avg']:.1f}", "Ø Stimmung", delta_s)
     kpi_card(k2, f"{current['kommunikation_avg']:.1f}", "Ø Kommunikation", delta_k)
     kpi_card(k3, f"{int(current['count'])}", "Antworten letzte Woche", None)
+    kpi_card(k4, f"{wl_cur:+.2f}", f"Workload-Balance · {wl_label(wl_cur)}", delta_wl)
 
     st.markdown("### Stimmungsverlauf")
     st.plotly_chart(line_area_chart(weekly["woche"], weekly["stimmung_avg"]), use_container_width=True)
@@ -613,28 +636,43 @@ def page_gruppen_dashboard():
     st.markdown("### Kommunikationsverlauf")
     st.plotly_chart(line_area_chart(weekly["woche"], weekly["kommunikation_avg"], color="#10B981"), use_container_width=True)
 
-    st.markdown("### Workload-Verteilung")
-    wl_counts = df["workload"].value_counts()
-    wl_colors = {"zu_wenig": "#F59E0B", "passt": "#10B981", "zu_viel": "#EF4444"}
-    wl_labels = {"zu_wenig": "Zu wenig", "passt": "Passt", "zu_viel": "Zu viel"}
-    fig = go.Figure()
-    for wl in ["zu_wenig", "passt", "zu_viel"]:
-        count = int(wl_counts.get(wl, 0))
-        if count == 0:
-            continue
-        fig.add_trace(go.Bar(
-            y=[""], x=[count], name=wl_labels[wl],
-            orientation='h', marker_color=wl_colors[wl],
-            text=[f"{count}"], textposition='inside', insidetextanchor='middle',
-            hovertemplate=f"{wl_labels[wl]}: %{{x}}<extra></extra>",
-        ))
-    fig.update_layout(**plotly_layout(
-        barmode='stack', height=130,
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
-        margin=dict(l=10, r=10, t=10, b=40),
-        legend=dict(orientation='h', yanchor='top', y=-0.1, xanchor='center', x=0.5),
+    st.markdown("### Workload-Balance")
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=wl_cur,
+        number={'font': {'color': '#F1F5F9', 'size': 42}, 'valueformat': '+.2f'},
+        title={'text': f"<b style='color:{wl_color(wl_cur)}'>{wl_label(wl_cur)}</b>", 'font': {'size': 18}},
+        gauge={
+            'axis': {
+                'range': [-1, 1],
+                'tickvals': [-1, 0, 1],
+                'ticktext': ['Zu wenig', 'Passt', 'Zu viel'],
+                'tickfont': {'color': '#F1F5F9', 'size': 13},
+                'tickcolor': '#334155',
+            },
+            'bar': {'color': wl_color(wl_cur), 'thickness': 0.28},
+            'bgcolor': 'rgba(0,0,0,0)',
+            'borderwidth': 1,
+            'bordercolor': '#334155',
+            'steps': [
+                {'range': [-1, -0.3], 'color': 'rgba(245,158,11,0.22)'},
+                {'range': [-0.3, 0.3], 'color': 'rgba(16,185,129,0.22)'},
+                {'range': [0.3, 1], 'color': 'rgba(239,68,68,0.22)'},
+            ],
+            'threshold': {
+                'line': {'color': '#F1F5F9', 'width': 3},
+                'thickness': 0.85,
+                'value': wl_cur,
+            },
+        },
     ))
+    fig.update_layout(
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font={'color': '#F1F5F9', 'family': 'sans-serif'},
+        margin=dict(l=40, r=40, t=60, b=20),
+        height=280,
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 
