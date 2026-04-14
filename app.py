@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 
 MIN_GROUP_SIZE = 3
 NAME_RE = re.compile(r'^[a-zA-Z0-9äöüÄÖÜß\s\-]{1,50}$')
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+NEW_GROUP_OPT = "➕ Neue Gruppe…"
 
 STIMMUNG_OPTIONS = [
     (1, "😞", "Schlecht"),
@@ -137,6 +139,10 @@ def valid_name(s):
     return bool(s and NAME_RE.match(s.strip()))
 
 
+def valid_email(s):
+    return bool(s and EMAIL_RE.match(s.strip()))
+
+
 @st.cache_resource
 def get_conn():
     conn = psycopg2.connect(st.secrets["DATABASE_URL"])
@@ -187,6 +193,17 @@ def _init_schema(conn):
             sent_at TIMESTAMP DEFAULT NOW(),
             gruppe VARCHAR,
             count INTEGER
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS registrierungen (
+            id SERIAL PRIMARY KEY,
+            vorname VARCHAR,
+            email VARCHAR,
+            wunschgruppe VARCHAR,
+            pseudo VARCHAR,
+            status VARCHAR DEFAULT 'ausstehend',
+            created_at TIMESTAMP DEFAULT NOW()
         )
     """)
     cur.close()
@@ -270,15 +287,99 @@ def choice_row(state_key, options, n_cols, render_label):
             st.markdown(f'<div class="choice-label">{label_sub}</div>', unsafe_allow_html=True)
 
 
-def page_checkin():
+def send_welcome_email(pseudo, email, token):
+    gmail_user = secret("GMAIL_USER")
+    gmail_pass = secret("GMAIL_APP_PASS")
+    app_url = secret("APP_URL")
+    if not all([gmail_user, gmail_pass, app_url]):
+        return False, "GMAIL_USER, GMAIL_APP_PASS und APP_URL müssen in secrets konfiguriert sein."
+    link = f"{app_url}?token={token}"
+    body = (
+        f"Hallo {pseudo},\n\n"
+        f"deine Anmeldung wurde freigegeben. Hier ist dein persönlicher Link für den wöchentlichen Stimmungs-Check:\n\n"
+        f"{link}\n\n"
+        f"Dauert nur 30 Sekunden pro Woche.\n\n"
+        f"Dein Stimmungsbarometer-Team"
+    )
+    try:
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = "Willkommen beim Stimmungsbarometer"
+        msg["From"] = gmail_user
+        msg["To"] = email
+        smtp = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+        smtp.login(gmail_user, gmail_pass)
+        smtp.sendmail(gmail_user, email, msg.as_string())
+        smtp.quit()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def render_registrierung():
+    conn = get_db()
+    cur = conn.cursor()
+
+    st.markdown("# Anmeldung zum Stimmungsbarometer")
+    st.markdown('<p class="subtle">Registriere dich für den wöchentlichen Pulse-Check. Du erhältst nach Freigabe deinen persönlichen Link per E-Mail.</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info-box">ℹ️ Deine Antworten werden anonym gespeichert. Deine E-Mail-Adresse wird ausschließlich für wöchentliche Erinnerungen verwendet und nicht an Dritte weitergegeben.</div>',
+        unsafe_allow_html=True
+    )
+
+    cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
+    existing_groups = [r[0] for r in cur.fetchall()]
+    options = ([NEW_GROUP_OPT] + existing_groups) if existing_groups else [NEW_GROUP_OPT]
+
+    with st.form("registrierung", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            vorname = st.text_input("Vorname", placeholder="Dein Vorname")
+            email = st.text_input("E-Mail", placeholder="name@beispiel.de")
+        with c2:
+            wunschgruppe_sel = st.selectbox("Wunschgruppe", options, index=1 if existing_groups else 0)
+            new_gruppe = st.text_input("Neue Gruppe", placeholder="z.B. Delta", disabled=(wunschgruppe_sel != NEW_GROUP_OPT))
+        pseudo = st.text_input("Pseudonym", placeholder="Wird im Dashboard statt deinem Klarnamen angezeigt")
+        submit = st.form_submit_button("Anmeldung absenden", use_container_width=True, type="primary")
+
+        if submit:
+            wunschgruppe = new_gruppe.strip() if wunschgruppe_sel == NEW_GROUP_OPT else wunschgruppe_sel
+            vorname_c = vorname.strip()
+            email_c = email.strip()
+            pseudo_c = pseudo.strip()
+
+            if not all([vorname_c, email_c, wunschgruppe, pseudo_c]):
+                st.error("Bitte alle Felder ausfüllen.")
+            elif not valid_name(vorname_c):
+                st.error("Ungültiger Vorname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+            elif not valid_email(email_c):
+                st.error("Ungültige E-Mail-Adresse.")
+            elif not valid_name(wunschgruppe):
+                st.error("Ungültiger Gruppenname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+            elif not valid_name(pseudo_c):
+                st.error("Ungültiges Pseudonym. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+            else:
+                cur.execute("SELECT 1 FROM registrierungen WHERE email = %s", [email_c])
+                if cur.fetchone():
+                    st.error("Für diese E-Mail-Adresse existiert bereits eine Anmeldung.")
+                else:
+                    cur.execute(
+                        """INSERT INTO registrierungen (vorname, email, wunschgruppe, pseudo)
+                           VALUES (%s, %s, %s, %s)""",
+                        [vorname_c, email_c, wunschgruppe, pseudo_c]
+                    )
+                    st.session_state["registration_done"] = True
+                    st.rerun()
+
+    if st.session_state.get("registration_done"):
+        st.markdown(
+            '<div class="alert-ok">🎉 Danke für deine Anmeldung. Du bekommst deinen persönlichen Link per E-Mail, sobald der Administrator dich freigibt.</div>',
+            unsafe_allow_html=True
+        )
+        st.session_state["registration_done"] = False
+
+
+def render_checkin(token):
     st.markdown("# Wöchentlicher Pulse-Check")
-
-    params = st.query_params
-    token = params.get("token", "").strip()
-
-    if not token:
-        st.markdown('<div class="alert-warn">Bitte nutze den Link aus deiner Einladungsmail.</div>', unsafe_allow_html=True)
-        return
 
     conn = get_db()
     cur = conn.cursor()
@@ -355,6 +456,14 @@ setTimeout(function() {
 }, 120);
 </script>
 """, height=0)
+
+
+def page_start():
+    token = st.query_params.get("token", "").strip()
+    if token:
+        render_checkin(token)
+    else:
+        render_registrierung()
 
 
 def line_area_chart(x, y, color="#2563EB", y_range=(1, 5)):
@@ -583,23 +692,93 @@ def page_gesamt_dashboard():
         st.info("Keine Teilnehmer in der Verwaltung hinterlegt.")
 
 
-def page_verwaltung():
-    if not admin_check("Verwaltung"):
-        return
-
-    st.markdown("# Verwaltung")
-    st.markdown('<p class="subtle">Teilnehmer, Gruppen und Reminder</p>', unsafe_allow_html=True)
-
-    conn = get_db()
-    cur = conn.cursor()
-
+def render_registrierungen_tab(conn, cur):
     cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
     existing_groups = [r[0] for r in cur.fetchall()]
 
-    st.markdown("### Teilnehmer hinzufügen")
-    NEW_GROUP_OPT = "➕ Neue Gruppe…"
+    cur.execute("""
+        SELECT id, vorname, email, wunschgruppe, pseudo, created_at
+        FROM registrierungen
+        WHERE status = 'ausstehend'
+        ORDER BY created_at
+    """)
+    pending = cur.fetchall()
+
+    if not pending:
+        st.info("Keine ausstehenden Registrierungen.")
+        return
+
+    st.caption(f"{len(pending)} ausstehende Anmeldung(en)")
+
+    for rid, vorname, email, wunschgruppe, pseudo, created_at in pending:
+        with st.container():
+            st.markdown(f'<div class="kpi-card" style="padding:16px 20px;">', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns([3, 3, 2])
+            with c1:
+                st.markdown(f"**{vorname}**  ")
+                st.markdown(f'<span style="color:#94A3B8;font-size:13px;">{email}</span>', unsafe_allow_html=True)
+                st.markdown(f'<span style="color:#64748B;font-size:12px;">angemeldet: {created_at.strftime("%d.%m.%Y %H:%M")}</span>', unsafe_allow_html=True)
+            with c2:
+                st.markdown(f'<span style="color:#94A3B8;font-size:13px;">Pseudo</span>', unsafe_allow_html=True)
+                st.markdown(f"**{pseudo}**")
+
+                default_idx = 0
+                options = ([NEW_GROUP_OPT] + existing_groups) if existing_groups else [NEW_GROUP_OPT]
+                if wunschgruppe in existing_groups:
+                    default_idx = existing_groups.index(wunschgruppe) + 1
+                else:
+                    options = [NEW_GROUP_OPT, wunschgruppe] + [g for g in existing_groups if g != wunschgruppe]
+                    default_idx = 1
+                gruppe_choice = st.selectbox(
+                    "Gruppe",
+                    options,
+                    index=default_idx,
+                    key=f"reg_gruppe_{rid}",
+                )
+                new_gruppe_in = st.text_input(
+                    "Neuer Gruppenname",
+                    placeholder="z.B. Delta",
+                    disabled=(gruppe_choice != NEW_GROUP_OPT),
+                    key=f"reg_newg_{rid}",
+                )
+            with c3:
+                st.markdown('<div style="height: 60px"></div>', unsafe_allow_html=True)
+                if st.button("Freigeben", key=f"reg_approve_{rid}", type="primary", use_container_width=True):
+                    final_gruppe = new_gruppe_in.strip() if gruppe_choice == NEW_GROUP_OPT else gruppe_choice
+                    if not valid_name(final_gruppe):
+                        st.error("Ungültiger Gruppenname.")
+                    elif not valid_name(pseudo):
+                        st.error("Ungültiges Pseudonym in der Registrierung.")
+                    else:
+                        cur.execute("SELECT 1 FROM teilnehmer WHERE pseudo = %s AND gruppe = %s", [pseudo, final_gruppe])
+                        if cur.fetchone():
+                            st.error(f"**{pseudo}** existiert bereits in Gruppe **{final_gruppe}**.")
+                        else:
+                            cur.execute(
+                                "INSERT INTO teilnehmer (pseudo, gruppe, email) VALUES (%s, %s, %s) RETURNING token",
+                                [pseudo, final_gruppe, email]
+                            )
+                            token = cur.fetchone()[0]
+                            cur.execute(
+                                "UPDATE registrierungen SET status = 'freigegeben' WHERE id = %s",
+                                [rid]
+                            )
+                            ok, err = send_welcome_email(pseudo, email, token)
+                            if ok:
+                                st.success(f"**{pseudo}** freigegeben — Willkommensmail versendet.")
+                            else:
+                                st.warning(f"Freigegeben, aber Mail-Versand fehlgeschlagen: {err}")
+                            st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('<div style="height: 10px"></div>', unsafe_allow_html=True)
+
+
+def render_teilnehmer_tab(conn, cur):
+    cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
+    existing_groups = [r[0] for r in cur.fetchall()]
     options = ([NEW_GROUP_OPT] + existing_groups) if existing_groups else [NEW_GROUP_OPT]
 
+    st.markdown("#### Teilnehmer hinzufügen")
     with st.form("add_teilnehmer", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
@@ -619,6 +798,8 @@ def page_verwaltung():
                 st.error("Ungültiger Gruppenname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
             elif not valid_name(pseudo_c):
                 st.error("Ungültiges Pseudonym. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+            elif not valid_email(email_c):
+                st.error("Ungültige E-Mail-Adresse.")
             else:
                 cur.execute("SELECT 1 FROM teilnehmer WHERE pseudo = %s AND gruppe = %s", [pseudo_c, gruppe])
                 if cur.fetchone():
@@ -635,36 +816,38 @@ def page_verwaltung():
                         conn.rollback()
                         st.error("Dieses Pseudonym ist in dieser Gruppe bereits vergeben.")
 
-    st.markdown("### Teilnehmer")
+    st.markdown("#### Teilnehmer-Liste")
     cur.execute("SELECT pseudo, gruppe, email, active, token FROM teilnehmer ORDER BY gruppe, pseudo")
     tcols = [d[0] for d in cur.description]
     teilnehmer = pd.DataFrame(cur.fetchall(), columns=tcols)
     if teilnehmer.empty:
         st.info("Keine Teilnehmer vorhanden.")
-    else:
-        gruppen_list = sorted(teilnehmer["gruppe"].unique())
-        tabs = st.tabs(gruppen_list)
-        for i, gname in enumerate(gruppen_list):
-            with tabs[i]:
-                gt = teilnehmer[teilnehmer["gruppe"] == gname].reset_index(drop=True)
-                for _, row in gt.iterrows():
-                    c1, c2, c3 = st.columns([3, 4, 1.2])
-                    dot_class = "on" if row["active"] else "off"
-                    status_text = "Aktiv" if row["active"] else "Inaktiv"
-                    c1.markdown(
-                        f'<span class="status-dot {dot_class}"></span>{row["pseudo"]} <span style="color:#64748B;font-size:12px;margin-left:6px;">{status_text}</span>',
-                        unsafe_allow_html=True
-                    )
-                    c2.markdown(f'<span style="color:#94A3B8">{row["email"]}</span>', unsafe_allow_html=True)
-                    if row["active"]:
-                        if c3.button("Deaktivieren", key=f"deact_{row['pseudo']}_{row['gruppe']}", use_container_width=True):
-                            cur.execute(
-                                "UPDATE teilnehmer SET active = false WHERE pseudo = %s AND gruppe = %s",
-                                [row["pseudo"], row["gruppe"]]
-                            )
-                            st.rerun()
+        return
 
-    st.markdown("### Reminder senden")
+    gruppen_list = sorted(teilnehmer["gruppe"].unique())
+    group_tabs = st.tabs(gruppen_list)
+    for i, gname in enumerate(gruppen_list):
+        with group_tabs[i]:
+            gt = teilnehmer[teilnehmer["gruppe"] == gname].reset_index(drop=True)
+            for _, row in gt.iterrows():
+                c1, c2, c3 = st.columns([3, 4, 1.2])
+                dot_class = "on" if row["active"] else "off"
+                status_text = "Aktiv" if row["active"] else "Inaktiv"
+                c1.markdown(
+                    f'<span class="status-dot {dot_class}"></span>{row["pseudo"]} <span style="color:#64748B;font-size:12px;margin-left:6px;">{status_text}</span>',
+                    unsafe_allow_html=True
+                )
+                c2.markdown(f'<span style="color:#94A3B8">{row["email"]}</span>', unsafe_allow_html=True)
+                if row["active"]:
+                    if c3.button("Deaktivieren", key=f"deact_{row['pseudo']}_{row['gruppe']}", use_container_width=True):
+                        cur.execute(
+                            "UPDATE teilnehmer SET active = false WHERE pseudo = %s AND gruppe = %s",
+                            [row["pseudo"], row["gruppe"]]
+                        )
+                        st.rerun()
+
+
+def render_reminder_tab(conn, cur):
     cur.execute("SELECT DISTINCT gruppe FROM teilnehmer WHERE active = true ORDER BY gruppe")
     reminder_gruppen = [r[0] for r in cur.fetchall()]
     if not reminder_gruppen:
@@ -739,8 +922,31 @@ def page_verwaltung():
                 st.warning(err)
 
 
+def page_verwaltung():
+    if not admin_check("Verwaltung"):
+        return
+
+    st.markdown("# Verwaltung")
+    st.markdown('<p class="subtle">Registrierungen, Teilnehmer und Reminder</p>', unsafe_allow_html=True)
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM registrierungen WHERE status = 'ausstehend'")
+    pending_count = cur.fetchone()[0]
+
+    reg_label = f"📥 Registrierungen ({pending_count})" if pending_count else "📥 Registrierungen"
+    tabs = st.tabs([reg_label, "👥 Teilnehmer", "📧 Reminder"])
+    with tabs[0]:
+        render_registrierungen_tab(conn, cur)
+    with tabs[1]:
+        render_teilnehmer_tab(conn, cur)
+    with tabs[2]:
+        render_reminder_tab(conn, cur)
+
+
 PAGES = {
-    "Check-In": page_checkin,
+    "Start": page_start,
     "Gruppen-Dashboard": page_gruppen_dashboard,
     "Gesamt-Dashboard": page_gesamt_dashboard,
     "Verwaltung": page_verwaltung,
