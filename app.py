@@ -438,9 +438,12 @@ def render_registrierung():
         "Ich stimme der Verarbeitung meiner Daten gemäß der Datenschutzerklärung zu",
         key="reg_consent"
     )
-    if cc2.button("📄 Datenschutzerklärung", key="goto_dsgvo", use_container_width=True):
-        st.session_state.nav = "Impressum & Datenschutz"
-        st.rerun()
+    cc2.button(
+        "📄 Datenschutzerklärung",
+        key="goto_dsgvo",
+        use_container_width=True,
+        on_click=lambda: st.session_state.update(nav="Impressum & Datenschutz"),
+    )
 
     if st.button("Anmeldung absenden", use_container_width=True, type="primary", disabled=not consent, key="reg_submit"):
         wunschgruppe = new_gruppe.strip() if wunschgruppe_sel == NEW_GROUP_OPT else wunschgruppe_sel
