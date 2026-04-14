@@ -393,7 +393,23 @@ def send_welcome_email(pseudo, email, token):
         return False, str(e)
 
 
+REG_KEYS = ["reg_vorname", "reg_email", "reg_wg", "reg_newg", "reg_pseudo", "reg_consent"]
+
+
 def render_registrierung():
+    if st.session_state.get("registration_done"):
+        st.markdown("# Anmeldung zum Stimmungsbarometer")
+        st.markdown(
+            '<div class="alert-ok">🎉 Danke für deine Anmeldung. Du bekommst deinen persönlichen Link per E-Mail, sobald der Administrator dich freigibt.</div>',
+            unsafe_allow_html=True
+        )
+        if st.button("Neue Anmeldung"):
+            st.session_state["registration_done"] = False
+            for k in REG_KEYS:
+                st.session_state.pop(k, None)
+            st.rerun()
+        return
+
     conn = get_db()
     cur = conn.cursor()
 
@@ -408,54 +424,56 @@ def render_registrierung():
     existing_groups = filter_out_demo([r[0] for r in cur.fetchall()])
     options = ([NEW_GROUP_OPT] + existing_groups) if existing_groups else [NEW_GROUP_OPT]
 
-    with st.form("registrierung", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            vorname = st.text_input("Vorname", placeholder="Dein Vorname")
-            email = st.text_input("E-Mail", placeholder="name@beispiel.de")
-        with c2:
-            wunschgruppe_sel = st.selectbox("Wunschgruppe", options, index=1 if existing_groups else 0)
-            new_gruppe = st.text_input("Neue Gruppe", placeholder="z.B. Delta", disabled=(wunschgruppe_sel != NEW_GROUP_OPT))
-        pseudo = st.text_input("Pseudonym", placeholder="Wird im Dashboard statt deinem Klarnamen angezeigt")
-        submit = st.form_submit_button("Anmeldung absenden", use_container_width=True, type="primary")
+    c1, c2 = st.columns(2)
+    with c1:
+        vorname = st.text_input("Vorname", placeholder="Dein Vorname", key="reg_vorname")
+        email = st.text_input("E-Mail", placeholder="name@beispiel.de", key="reg_email")
+    with c2:
+        wunschgruppe_sel = st.selectbox("Wunschgruppe", options, index=1 if existing_groups else 0, key="reg_wg")
+        new_gruppe = st.text_input("Neue Gruppe", placeholder="z.B. Delta", disabled=(wunschgruppe_sel != NEW_GROUP_OPT), key="reg_newg")
+    pseudo = st.text_input("Pseudonym", placeholder="Wird im Dashboard statt deinem Klarnamen angezeigt", key="reg_pseudo")
 
-        if submit:
-            wunschgruppe = new_gruppe.strip() if wunschgruppe_sel == NEW_GROUP_OPT else wunschgruppe_sel
-            vorname_c = vorname.strip()
-            email_c = email.strip()
-            pseudo_c = pseudo.strip()
+    cc1, cc2 = st.columns([5, 2])
+    consent = cc1.checkbox(
+        "Ich stimme der Verarbeitung meiner Daten gemäß der Datenschutzerklärung zu",
+        key="reg_consent"
+    )
+    if cc2.button("📄 Datenschutzerklärung", key="goto_dsgvo", use_container_width=True):
+        st.session_state.nav = "Impressum & Datenschutz"
+        st.rerun()
 
-            if not all([vorname_c, email_c, wunschgruppe, pseudo_c]):
-                st.error("Bitte alle Felder ausfüllen.")
-            elif not valid_name(vorname_c):
-                st.error("Ungültiger Vorname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
-            elif not valid_email(email_c):
-                st.error("Ungültige E-Mail-Adresse.")
-            elif not valid_name(wunschgruppe):
-                st.error("Ungültiger Gruppenname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
-            elif is_reserved_group(wunschgruppe):
-                st.error("Dieser Gruppenname ist reserviert. Bitte einen anderen wählen.")
-            elif not valid_name(pseudo_c):
-                st.error("Ungültiges Pseudonym. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+    if st.button("Anmeldung absenden", use_container_width=True, type="primary", disabled=not consent, key="reg_submit"):
+        wunschgruppe = new_gruppe.strip() if wunschgruppe_sel == NEW_GROUP_OPT else wunschgruppe_sel
+        vorname_c = vorname.strip()
+        email_c = email.strip()
+        pseudo_c = pseudo.strip()
+
+        if not all([vorname_c, email_c, wunschgruppe, pseudo_c]):
+            st.error("Bitte alle Felder ausfüllen.")
+        elif not valid_name(vorname_c):
+            st.error("Ungültiger Vorname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+        elif not valid_email(email_c):
+            st.error("Ungültige E-Mail-Adresse.")
+        elif not valid_name(wunschgruppe):
+            st.error("Ungültiger Gruppenname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+        elif is_reserved_group(wunschgruppe):
+            st.error("Dieser Gruppenname ist reserviert. Bitte einen anderen wählen.")
+        elif not valid_name(pseudo_c):
+            st.error("Ungültiges Pseudonym. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+        else:
+            cur.execute("SELECT 1 FROM registrierungen WHERE email = %s", [email_c])
+            if cur.fetchone():
+                st.error("Für diese E-Mail-Adresse existiert bereits eine Anmeldung.")
             else:
-                cur.execute("SELECT 1 FROM registrierungen WHERE email = %s", [email_c])
-                if cur.fetchone():
-                    st.error("Für diese E-Mail-Adresse existiert bereits eine Anmeldung.")
-                else:
-                    cur.execute(
-                        """INSERT INTO registrierungen (vorname, email, wunschgruppe, pseudo)
-                           VALUES (%s, %s, %s, %s)""",
-                        [vorname_c, email_c, wunschgruppe, pseudo_c]
-                    )
-                    st.session_state["registration_done"] = True
-                    st.rerun()
-
-    if st.session_state.get("registration_done"):
-        st.markdown(
-            '<div class="alert-ok">🎉 Danke für deine Anmeldung. Du bekommst deinen persönlichen Link per E-Mail, sobald der Administrator dich freigibt.</div>',
-            unsafe_allow_html=True
-        )
-        st.session_state["registration_done"] = False
+                cur.execute(
+                    """INSERT INTO registrierungen (vorname, email, wunschgruppe, pseudo)
+                       VALUES (%s, %s, %s, %s)""",
+                    [vorname_c, email_c, wunschgruppe, pseudo_c]
+                )
+                st.session_state["registration_done"] = True
+                for k in REG_KEYS:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
 
 def render_checkin(token):
