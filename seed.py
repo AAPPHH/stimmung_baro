@@ -61,6 +61,7 @@ def seed():
     conn.autocommit = True
     cur = conn.cursor()
 
+    cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pulse_checks (
             id SERIAL PRIMARY KEY,
@@ -78,9 +79,12 @@ def seed():
             gruppe VARCHAR,
             email VARCHAR,
             active BOOLEAN DEFAULT true,
+            token VARCHAR DEFAULT gen_random_uuid(),
             PRIMARY KEY (pseudo, gruppe)
         )
     """)
+    cur.execute("ALTER TABLE teilnehmer ADD COLUMN IF NOT EXISTS token VARCHAR DEFAULT gen_random_uuid()")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_teilnehmer_token ON teilnehmer(token)")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS reminder_log (
             sent_at TIMESTAMP DEFAULT NOW(),
@@ -91,6 +95,7 @@ def seed():
 
     cur.execute("DELETE FROM pulse_checks")
     cur.execute("DELETE FROM teilnehmer")
+    cur.execute("DELETE FROM reminder_log")
 
     today = datetime.now()
     last_monday = today - timedelta(days=today.weekday())
@@ -110,7 +115,7 @@ def seed():
             for pseudo in config["pseudonyme"]:
                 if random.random() > 0.85:
                     continue
-                token = hash_pseudo(pseudo)
+                anon_token = hash_pseudo(pseudo)
                 stimmung = stimmung_for(trend, week_idx)
                 komm = kommunikation_for(trend, week_idx)
                 wl = workload_for(trend, week_idx)
@@ -123,13 +128,21 @@ def seed():
                     """INSERT INTO pulse_checks
                        (submitted_at, anon_token, gruppe, stimmung, workload, kommunikation)
                        VALUES (%s, %s, %s, %s, %s, %s)""",
-                    [ts, token, gruppe_name, stimmung, wl, komm]
+                    [ts, anon_token, gruppe_name, stimmung, wl, komm]
                 )
                 row_count += 1
 
+    cur.execute("SELECT gruppe, pseudo, token FROM teilnehmer ORDER BY gruppe, pseudo LIMIT 3")
+    samples = cur.fetchall()
+
     cur.close()
     conn.close()
-    print(f"Seed: {row_count} Pulse-Checks, {sum(len(c['pseudonyme']) for c in GRUPPEN.values())} Teilnehmer.")
+
+    total_teilnehmer = sum(len(c['pseudonyme']) for c in GRUPPEN.values())
+    print(f"Seed: {row_count} Pulse-Checks, {total_teilnehmer} Teilnehmer.")
+    print("Beispiel-Tokens:")
+    for g, p, t in samples:
+        print(f"  {g}/{p}: ?token={t}")
 
 
 if __name__ == "__main__":

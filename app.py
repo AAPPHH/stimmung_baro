@@ -3,12 +3,14 @@ import streamlit.components.v1 as components
 import psycopg2
 import hashlib
 import smtplib
+import re
 import pandas as pd
 import plotly.graph_objects as go
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
 MIN_GROUP_SIZE = 3
+NAME_RE = re.compile(r'^[a-zA-Z0-9äöüÄÖÜß\s\-]{1,50}$')
 
 STIMMUNG_OPTIONS = [
     (1, "😞", "Schlecht"),
@@ -100,15 +102,22 @@ h2, h3 {font-weight: 600; letter-spacing: -0.01em;}
     border-radius: 10px; padding: 14px 18px; color: #6EE7B7; margin: 8px 0 20px 0;
     font-weight: 500;
 }
+.info-box {
+    background: rgba(37,99,235,0.08); border: 1px solid rgba(37,99,235,0.3);
+    border-radius: 10px; padding: 12px 16px; color: #93C5FD; margin: 8px 0 24px 0;
+    font-size: 13px; line-height: 1.5;
+}
 
 .status-dot {display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px;}
 .status-dot.on {background: #10B981; box-shadow: 0 0 0 3px rgba(16,185,129,0.2);}
 .status-dot.off {background: #EF4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.2);}
 
-.section-card {
+.greeting {
     background: #1E293B; border: 1px solid #334155;
-    border-radius: 14px; padding: 24px; margin-bottom: 20px;
+    border-radius: 12px; padding: 18px 22px; margin: 8px 0 8px 0;
+    font-size: 17px; color: #F1F5F9;
 }
+.greeting b {color: #93C5FD;}
 
 hr {border-color: #334155 !important; margin: 1.5rem 0 !important;}
 
@@ -122,6 +131,10 @@ def secret(key, default=""):
         return st.secrets[key]
     except (KeyError, FileNotFoundError):
         return default
+
+
+def valid_name(s):
+    return bool(s and NAME_RE.match(s.strip()))
 
 
 @st.cache_resource
@@ -144,6 +157,7 @@ def get_db():
 
 def _init_schema(conn):
     cur = conn.cursor()
+    cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pulse_checks (
             id SERIAL PRIMARY KEY,
@@ -161,9 +175,13 @@ def _init_schema(conn):
             gruppe VARCHAR,
             email VARCHAR,
             active BOOLEAN DEFAULT true,
+            token VARCHAR DEFAULT gen_random_uuid(),
             PRIMARY KEY (pseudo, gruppe)
         )
     """)
+    cur.execute("ALTER TABLE teilnehmer ADD COLUMN IF NOT EXISTS token VARCHAR DEFAULT gen_random_uuid()")
+    cur.execute("UPDATE teilnehmer SET token = gen_random_uuid() WHERE token IS NULL")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_teilnehmer_token ON teilnehmer(token)")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS reminder_log (
             sent_at TIMESTAMP DEFAULT NOW(),
@@ -220,9 +238,9 @@ def admin_check(title="Admin-Zugang"):
     if not pw:
         st.error("ADMIN_PASS nicht konfiguriert.")
         return False
-    if "admin_ok" not in st.session_state:
-        st.session_state.admin_ok = False
-    if st.session_state.admin_ok:
+    if "auth_admin" not in st.session_state:
+        st.session_state.auth_admin = False
+    if st.session_state.auth_admin:
         return True
     _, mid, _ = st.columns([1, 1.4, 1])
     with mid:
@@ -231,7 +249,7 @@ def admin_check(title="Admin-Zugang"):
         entered = st.text_input("Passwort", type="password", label_visibility="collapsed", placeholder="Passwort eingeben")
         if st.button("Anmelden", use_container_width=True, type="primary"):
             if entered == pw:
-                st.session_state.admin_ok = True
+                st.session_state.auth_admin = True
                 st.rerun()
             else:
                 st.error("Falsches Passwort.")
@@ -253,36 +271,46 @@ def choice_row(state_key, options, n_cols, render_label):
 
 
 def page_checkin():
-    st.markdown("# Willkommen zum wöchentlichen Pulse-Check")
-    st.markdown('<p class="subtle">Deine Antworten sind vollständig anonym. Dauer: ca. 30 Sekunden.</p>', unsafe_allow_html=True)
+    st.markdown("# Wöchentlicher Pulse-Check")
+
+    params = st.query_params
+    token = params.get("token", "").strip()
+
+    if not token:
+        st.markdown('<div class="alert-warn">Bitte nutze den Link aus deiner Einladungsmail.</div>', unsafe_allow_html=True)
+        return
 
     conn = get_db()
     cur = conn.cursor()
-    params = st.query_params
-    gruppe_param = params.get("gruppe", "")
-    pseudo_param = params.get("pseudo", "")
+    cur.execute("SELECT pseudo, gruppe, active FROM teilnehmer WHERE token = %s", [token])
+    row = cur.fetchone()
+    if not row:
+        st.markdown('<div class="alert-warn">Ungültiger Link. Bitte nutze den Link aus deiner Einladungsmail.</div>', unsafe_allow_html=True)
+        return
 
-    cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
-    gruppen = [r[0] for r in cur.fetchall()]
+    pseudo, gruppe, active = row
+    if not active:
+        st.markdown('<div class="alert-warn">Dein Zugang wurde deaktiviert. Wende dich an den Administrator.</div>', unsafe_allow_html=True)
+        return
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if gruppe_param and gruppe_param in gruppen:
-            gruppe = gruppe_param
-            st.text_input("Gruppe", value=gruppe, disabled=True)
-        elif gruppen:
-            gruppe = st.selectbox("Gruppe", gruppen)
-        else:
-            gruppe = st.text_input("Gruppe")
-    with c2:
-        if pseudo_param:
-            pseudo = pseudo_param
-            st.text_input("Pseudonym", value=pseudo, disabled=True)
-        else:
-            pseudo = st.text_input("Dein Pseudonym")
+    st.markdown(f'<div class="greeting">Hallo <b>{pseudo}</b> — Gruppe <b>{gruppe}</b></div>', unsafe_allow_html=True)
+    st.markdown('<p class="subtle">Deine Antworten sind vollständig anonym. Dauer: ca. 30 Sekunden.</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="info-box">ℹ️ Deine Antworten werden anonym gespeichert. Deine E-Mail-Adresse wird ausschließlich für wöchentliche Erinnerungen verwendet und nicht an Dritte weitergegeben.</div>',
+        unsafe_allow_html=True
+    )
 
-    if not pseudo or not gruppe:
-        st.markdown('<div class="alert-warn">Bitte Pseudonym und Gruppe angeben.</div>', unsafe_allow_html=True)
+    anon_token = hash_pseudo(pseudo)
+    iso = datetime.now().isocalendar()
+    cur.execute(
+        """SELECT 1 FROM pulse_checks
+           WHERE anon_token = %s
+             AND EXTRACT(ISOYEAR FROM submitted_at) = %s
+             AND EXTRACT(WEEK FROM submitted_at) = %s""",
+        [anon_token, iso.year, iso.week]
+    )
+    if cur.fetchone():
+        st.markdown('<div class="alert-ok">✅ Du hast diese Woche bereits teilgenommen. Nächster Check-In ab Montag.</div>', unsafe_allow_html=True)
         return
 
     st.markdown("### Wie ist deine Stimmung?")
@@ -306,11 +334,10 @@ def page_checkin():
         submit = st.button("Absenden", type="primary", use_container_width=True, disabled=not can_submit)
 
     if submit and can_submit:
-        token = hash_pseudo(pseudo)
         cur.execute(
             """INSERT INTO pulse_checks (anon_token, gruppe, stimmung, workload, kommunikation)
                VALUES (%s, %s, %s, %s, %s)""",
-            [token, gruppe, st.session_state["stimmung_sel"], st.session_state["workload_sel"], st.session_state["komm_sel"]]
+            [anon_token, gruppe, st.session_state["stimmung_sel"], st.session_state["workload_sel"], st.session_state["komm_sel"]]
         )
         cur.close()
         st.session_state["stimmung_sel"] = None
@@ -318,7 +345,6 @@ def page_checkin():
         st.session_state["komm_sel"] = None
         st.markdown('<div class="alert-ok">🎉 Danke für dein Feedback — bis nächste Woche!</div>', unsafe_allow_html=True)
         components.html("""
-<div id="confetti-root"></div>
 <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.2/dist/confetti.browser.min.js"></script>
 <script>
 setTimeout(function() {
@@ -332,12 +358,13 @@ setTimeout(function() {
 
 
 def line_area_chart(x, y, color="#2563EB", y_range=(1, 5)):
+    rgb = tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=x, y=y, mode='lines+markers',
         line=dict(color=color, width=3, shape='spline', smoothing=0.8),
         fill='tozeroy',
-        fillcolor=f"rgba{tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + (0.18,)}",
+        fillcolor=f'rgba({rgb[0]},{rgb[1]},{rgb[2]},0.18)',
         marker=dict(size=8, color=color, line=dict(color='#0F172A', width=2)),
         hovertemplate='%{x|%d.%m.%Y}<br>Ø %{y:.2f}<extra></extra>',
     ))
@@ -566,36 +593,50 @@ def page_verwaltung():
     conn = get_db()
     cur = conn.cursor()
 
+    cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
+    existing_groups = [r[0] for r in cur.fetchall()]
+
     st.markdown("### Teilnehmer hinzufügen")
-    with st.container():
-        with st.form("add_teilnehmer", clear_on_submit=True):
-            c1, c2, c3, c4 = st.columns([3, 3, 4, 2])
-            with c1:
-                pseudo = st.text_input("Pseudonym", placeholder="z.B. Roter Falke")
-            with c2:
-                gruppe = st.text_input("Gruppe", placeholder="z.B. Alpha")
-            with c3:
-                email = st.text_input("E-Mail", placeholder="name@firma.de")
-            with c4:
-                st.markdown('<div style="height: 28px"></div>', unsafe_allow_html=True)
-                submit = st.form_submit_button("Hinzufügen", use_container_width=True, type="primary")
-            if submit:
-                if pseudo and gruppe and email:
+    NEW_GROUP_OPT = "➕ Neue Gruppe…"
+    options = ([NEW_GROUP_OPT] + existing_groups) if existing_groups else [NEW_GROUP_OPT]
+
+    with st.form("add_teilnehmer", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            gruppe_sel = st.selectbox("Gruppe", options, index=1 if existing_groups else 0)
+            new_gruppe = st.text_input("Neuer Gruppenname", placeholder="z.B. Delta", disabled=(gruppe_sel != NEW_GROUP_OPT))
+        with c2:
+            pseudo = st.text_input("Pseudonym", placeholder="z.B. Roter Falke")
+            email = st.text_input("E-Mail", placeholder="name@firma.de")
+        submit = st.form_submit_button("Hinzufügen", use_container_width=True, type="primary")
+        if submit:
+            gruppe = new_gruppe.strip() if gruppe_sel == NEW_GROUP_OPT else gruppe_sel
+            pseudo_c = pseudo.strip()
+            email_c = email.strip()
+            if not gruppe or not pseudo_c or not email_c:
+                st.error("Alle Felder ausfüllen.")
+            elif not valid_name(gruppe):
+                st.error("Ungültiger Gruppenname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+            elif not valid_name(pseudo_c):
+                st.error("Ungültiges Pseudonym. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+            else:
+                cur.execute("SELECT 1 FROM teilnehmer WHERE pseudo = %s AND gruppe = %s", [pseudo_c, gruppe])
+                if cur.fetchone():
+                    st.error("Dieses Pseudonym ist in dieser Gruppe bereits vergeben.")
+                else:
                     try:
                         cur.execute(
                             "INSERT INTO teilnehmer (pseudo, gruppe, email) VALUES (%s, %s, %s)",
-                            [pseudo.strip(), gruppe.strip(), email.strip()]
+                            [pseudo_c, gruppe, email_c]
                         )
-                        st.success(f"**{pseudo}** zur Gruppe **{gruppe}** hinzugefügt.")
+                        st.success(f"**{pseudo_c}** zur Gruppe **{gruppe}** hinzugefügt.")
                         st.rerun()
                     except psycopg2.errors.UniqueViolation:
                         conn.rollback()
-                        st.error("Teilnehmer existiert bereits in dieser Gruppe.")
-                else:
-                    st.warning("Alle Felder ausfüllen.")
+                        st.error("Dieses Pseudonym ist in dieser Gruppe bereits vergeben.")
 
     st.markdown("### Teilnehmer")
-    cur.execute("SELECT pseudo, gruppe, email, active FROM teilnehmer ORDER BY gruppe, pseudo")
+    cur.execute("SELECT pseudo, gruppe, email, active, token FROM teilnehmer ORDER BY gruppe, pseudo")
     tcols = [d[0] for d in cur.description]
     teilnehmer = pd.DataFrame(cur.fetchall(), columns=tcols)
     if teilnehmer.empty:
@@ -610,7 +651,10 @@ def page_verwaltung():
                     c1, c2, c3 = st.columns([3, 4, 1.2])
                     dot_class = "on" if row["active"] else "off"
                     status_text = "Aktiv" if row["active"] else "Inaktiv"
-                    c1.markdown(f'<span class="status-dot {dot_class}"></span>{row["pseudo"]} <span style="color:#64748B;font-size:12px;margin-left:6px;">{status_text}</span>', unsafe_allow_html=True)
+                    c1.markdown(
+                        f'<span class="status-dot {dot_class}"></span>{row["pseudo"]} <span style="color:#64748B;font-size:12px;margin-left:6px;">{status_text}</span>',
+                        unsafe_allow_html=True
+                    )
                     c2.markdown(f'<span style="color:#94A3B8">{row["email"]}</span>', unsafe_allow_html=True)
                     if row["active"]:
                         if c3.button("Deaktivieren", key=f"deact_{row['pseudo']}_{row['gruppe']}", use_container_width=True):
@@ -631,13 +675,13 @@ def page_verwaltung():
 
     if sel_gruppen:
         cur.execute(
-            "SELECT gruppe, MAX(sent_at), SUM(count) FROM reminder_log WHERE gruppe = ANY(%s) GROUP BY gruppe",
+            "SELECT gruppe, MAX(sent_at) FROM reminder_log WHERE gruppe = ANY(%s) GROUP BY gruppe",
             [sel_gruppen]
         )
-        last_rows = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+        last_rows = {r[0]: r[1] for r in cur.fetchall()}
         for g in sel_gruppen:
-            if g in last_rows and last_rows[g][0]:
-                days_ago = (datetime.now() - last_rows[g][0]).days
+            if g in last_rows and last_rows[g]:
+                days_ago = (datetime.now() - last_rows[g]).days
                 st.caption(f"**{g}** — zuletzt gesendet vor {days_ago} Tag{'en' if days_ago != 1 else ''}")
             else:
                 st.caption(f"**{g}** — noch kein Reminder gesendet")
@@ -662,29 +706,26 @@ def page_verwaltung():
 
             for g in sel_gruppen:
                 cur.execute(
-                    "SELECT pseudo, email FROM teilnehmer WHERE gruppe = %s AND active = true",
+                    "SELECT pseudo, email, token FROM teilnehmer WHERE gruppe = %s AND active = true",
                     [g]
                 )
                 empfaenger = cur.fetchall()
                 sent_count = 0
-                for pseudo, email in empfaenger:
-                    link = f"{app_url}?gruppe={g}&pseudo={pseudo}"
+                for pseudo_r, email_r, token_r in empfaenger:
+                    link = f"{app_url}?token={token_r}"
                     body = (
-                        f"Hallo {pseudo},\n\n"
-                        f"es ist wieder Zeit für deinen wöchentlichen Stimmungs-Check!\n\n"
-                        f"Klick einfach auf den Link — dauert nur 30 Sekunden:\n{link}\n\n"
-                        f"Danke und schöne Woche!\n"
-                        f"Dein Stimmungsbarometer-Team"
+                        f"Hallo {pseudo_r}, hier ist dein persönlicher Link für den wöchentlichen Check-In: "
+                        f"{link}. Dauert nur 30 Sekunden."
                     )
                     msg = MIMEText(body, "plain", "utf-8")
                     msg["Subject"] = "Dein wöchentlicher Stimmungs-Check"
                     msg["From"] = gmail_user
-                    msg["To"] = email
+                    msg["To"] = email_r
                     try:
-                        smtp.sendmail(gmail_user, email, msg.as_string())
+                        smtp.sendmail(gmail_user, email_r, msg.as_string())
                         sent_count += 1
                     except Exception as e:
-                        all_errors.append(f"{g} / {email}: {e}")
+                        all_errors.append(f"{g} / {email_r}: {e}")
                 cur.execute(
                     "INSERT INTO reminder_log (gruppe, count) VALUES (%s, %s)",
                     [g, sent_count]
@@ -711,5 +752,10 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 with st.sidebar:
     st.markdown('<div class="sidebar-brand"><span class="brand-icon">🌡️</span><span class="brand-name">Stimmungsbarometer</span></div>', unsafe_allow_html=True)
     page = st.radio("Navigation", list(PAGES.keys()), label_visibility="collapsed")
+    if st.session_state.get("auth_admin"):
+        st.markdown('<hr style="margin: 18px 0 10px 0; border-color: #334155;">', unsafe_allow_html=True)
+        if st.button("Abmelden", use_container_width=True, key="logout_btn"):
+            st.session_state.auth_admin = False
+            st.rerun()
 
 PAGES[page]()
