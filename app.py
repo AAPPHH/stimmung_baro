@@ -564,7 +564,12 @@ def page_gruppen_dashboard():
         st.info("Noch keine Daten vorhanden.")
         return
 
-    idx = gruppen.index(gruppe_param) if gruppe_param and gruppe_param in gruppen else 0
+    if gruppe_param and gruppe_param in gruppen:
+        idx = gruppen.index(gruppe_param)
+    elif DEMO_GRUPPE in gruppen:
+        idx = gruppen.index(DEMO_GRUPPE)
+    else:
+        idx = 0
     top1, top2 = st.columns([3, 1])
     with top2:
         gruppe = st.selectbox("Gruppe", gruppen, index=idx, label_visibility="collapsed")
