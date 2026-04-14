@@ -64,6 +64,11 @@ CUSTOM_CSS = """
 [data-testid="stToolbar"] {display: none !important;}
 [data-testid="stDecoration"] {display: none;}
 
+[data-testid="stSidebar"] {display: block !important; visibility: visible !important; transform: none !important;}
+[data-testid="collapsedControl"] {display: none !important;}
+[data-testid="stSidebarCollapseButton"] {display: none !important;}
+[data-testid="stSidebarCollapsedControl"] {display: none !important;}
+
 .block-container {padding-top: 2.5rem; padding-bottom: 3rem; max-width: 1200px;}
 
 h1 {font-weight: 700; letter-spacing: -0.02em;}
@@ -518,12 +523,17 @@ setTimeout(function() {
 """, height=0)
 
 
-def page_start():
+def page_anmeldung():
+    render_registrierung()
+
+
+def page_checkin():
     token = st.query_params.get("token", "").strip()
-    if token:
-        render_checkin(token)
-    else:
-        render_registrierung()
+    if not token:
+        st.markdown("# Wöchentlicher Pulse-Check")
+        st.markdown('<div class="alert-warn">Bitte nutze den Link aus deiner Einladungsmail.</div>', unsafe_allow_html=True)
+        return
+    render_checkin(token)
 
 
 def line_area_chart(x, y, color="#2563EB", y_range=(1, 5)):
@@ -1013,7 +1023,8 @@ def page_verwaltung():
 
 
 PAGES = {
-    "Start": page_start,
+    "Anmeldung": page_anmeldung,
+    "Check-In": page_checkin,
     "Gruppen-Dashboard": page_gruppen_dashboard,
     "Gesamt-Dashboard": page_gesamt_dashboard,
     "Verwaltung": page_verwaltung,
@@ -1022,9 +1033,12 @@ PAGES = {
 st.set_page_config(page_title="Stimmungsbarometer", page_icon="🌡️", layout="wide", initial_sidebar_state="expanded")
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
+if "nav" not in st.session_state:
+    st.session_state.nav = "Check-In" if st.query_params.get("token", "").strip() else "Anmeldung"
+
 with st.sidebar:
     st.markdown('<div class="sidebar-brand"><span class="brand-icon">🌡️</span><span class="brand-name">Stimmungsbarometer</span></div>', unsafe_allow_html=True)
-    page = st.radio("Navigation", list(PAGES.keys()), label_visibility="collapsed")
+    page = st.radio("Navigation", list(PAGES.keys()), key="nav", label_visibility="collapsed")
     if st.session_state.get("auth_admin"):
         st.markdown('<hr style="margin: 18px 0 10px 0; border-color: #334155;">', unsafe_allow_html=True)
         if st.button("Abmelden", use_container_width=True, key="logout_btn"):
