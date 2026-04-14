@@ -76,20 +76,6 @@ h2, h3 {font-weight: 600; letter-spacing: -0.01em;}
 
 .subtle {color: #94A3B8; font-size: 15px; margin: -8px 0 24px 0;}
 
-.sidebar-brand {
-    display: flex; align-items: center; gap: 10px;
-    padding: 6px 0 20px 0;
-    border-bottom: 1px solid #334155; margin-bottom: 18px;
-}
-.brand-icon {font-size: 26px;}
-.brand-name {font-size: 17px; font-weight: 700; color: #F1F5F9;}
-
-[data-testid="stSidebar"] [data-testid="stRadio"] label {
-    padding: 10px 12px; border-radius: 8px; margin: 2px 0;
-    transition: background 0.15s;
-}
-[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {background: rgba(37,99,235,0.08);}
-
 .kpi-card {
     background: #1E293B; border: 1px solid #334155;
     border-radius: 14px; padding: 22px 24px;
@@ -1036,13 +1022,14 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 if "nav" not in st.session_state:
     st.session_state.nav = "Check-In" if st.query_params.get("token", "").strip() else "Anmeldung"
 
-with st.sidebar:
-    st.markdown('<div class="sidebar-brand"><span class="brand-icon">🌡️</span><span class="brand-name">Stimmungsbarometer</span></div>', unsafe_allow_html=True)
-    page = st.radio("Navigation", list(PAGES.keys()), key="nav", label_visibility="collapsed")
-    if st.session_state.get("auth_admin"):
-        st.markdown('<hr style="margin: 18px 0 10px 0; border-color: #334155;">', unsafe_allow_html=True)
-        if st.button("Abmelden", use_container_width=True, key="logout_btn"):
-            st.session_state.auth_admin = False
-            st.rerun()
+st.sidebar.title("🌡️ Stimmungsbarometer")
+st.sidebar.divider()
+page = st.sidebar.radio("Navigation", list(PAGES.keys()), key="nav")
+if st.session_state.get("auth_admin"):
+    if st.sidebar.button("Abmelden", use_container_width=True, key="logout_btn"):
+        st.session_state.auth_admin = False
+        st.rerun()
+st.sidebar.divider()
+st.sidebar.caption("v1.0 — HSD Business Analytics")
 
 PAGES[page]()
