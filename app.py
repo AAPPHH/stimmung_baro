@@ -4,6 +4,7 @@ import psycopg2
 import hashlib
 import smtplib
 import re
+import random
 import pandas as pd
 import plotly.graph_objects as go
 from email.mime.text import MIMEText
@@ -13,6 +14,28 @@ MIN_GROUP_SIZE = 3
 NAME_RE = re.compile(r'^[a-zA-Z0-9äöüÄÖÜß\s\-]{1,50}$')
 EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 NEW_GROUP_OPT = "➕ Neue Gruppe…"
+DEMO_GRUPPE = "Demo-Team"
+DEMO_TEILNEHMER = [
+    ("Demo Anna", "demo.anna@example.com"),
+    ("Demo Ben", "demo.ben@example.com"),
+    ("Demo Chris", "demo.chris@example.com"),
+    ("Demo Dana", "demo.dana@example.com"),
+    ("Demo Elias", "demo.elias@example.com"),
+]
+
+
+def filter_out_demo(gruppen):
+    return [g for g in gruppen if g != DEMO_GRUPPE]
+
+
+def sort_demo_last(gruppen):
+    normal = sorted([g for g in gruppen if g != DEMO_GRUPPE])
+    demo = [g for g in gruppen if g == DEMO_GRUPPE]
+    return normal + demo
+
+
+def is_reserved_group(name):
+    return name.strip().lower() == DEMO_GRUPPE.lower()
 
 STIMMUNG_OPTIONS = [
     (1, "😞", "Schlecht"),
@@ -158,7 +181,42 @@ def get_db():
         st.cache_resource.clear()
         conn = get_conn()
     _init_schema(conn)
+    _seed_demo_if_missing(conn)
     return conn
+
+
+def _seed_demo_if_missing(conn):
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM teilnehmer WHERE gruppe = %s LIMIT 1", [DEMO_GRUPPE])
+    if cur.fetchone():
+        cur.close()
+        return
+    for pseudo, email in DEMO_TEILNEHMER:
+        cur.execute(
+            "INSERT INTO teilnehmer (pseudo, gruppe, email) VALUES (%s, %s, %s)",
+            [pseudo, DEMO_GRUPPE, email]
+        )
+    rnd = random.Random(42)
+    today = datetime.now()
+    last_monday = today - timedelta(days=today.weekday())
+    mondays = [last_monday - timedelta(weeks=w) for w in range(5, -1, -1)]
+    for week_idx, monday in enumerate(mondays):
+        base_stimmung = 4.0 - (1.2 * week_idx / 5)
+        passt_weight = max(0, 5 - week_idx)
+        zu_viel_weight = max(0, week_idx)
+        wl_pool = ["passt"] * passt_weight + ["zu_viel"] * zu_viel_weight + ["zu_wenig"]
+        for i, (pseudo, _) in enumerate(DEMO_TEILNEHMER):
+            anon_token = hash_pseudo(pseudo)
+            stimmung = max(1, min(5, round(base_stimmung + rnd.uniform(-0.3, 0.3))))
+            komm = rnd.randint(2, 4)
+            wl = rnd.choice(wl_pool)
+            ts = monday.replace(hour=9 + (i % 8), minute=rnd.randint(0, 59), second=0, microsecond=0)
+            cur.execute(
+                """INSERT INTO pulse_checks (submitted_at, anon_token, gruppe, stimmung, workload, kommunikation)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                [ts, anon_token, DEMO_GRUPPE, stimmung, wl, komm]
+            )
+    cur.close()
 
 
 def _init_schema(conn):
@@ -327,7 +385,7 @@ def render_registrierung():
     )
 
     cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
-    existing_groups = [r[0] for r in cur.fetchall()]
+    existing_groups = filter_out_demo([r[0] for r in cur.fetchall()])
     options = ([NEW_GROUP_OPT] + existing_groups) if existing_groups else [NEW_GROUP_OPT]
 
     with st.form("registrierung", clear_on_submit=True):
@@ -355,6 +413,8 @@ def render_registrierung():
                 st.error("Ungültige E-Mail-Adresse.")
             elif not valid_name(wunschgruppe):
                 st.error("Ungültiger Gruppenname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+            elif is_reserved_group(wunschgruppe):
+                st.error("Dieser Gruppenname ist reserviert. Bitte einen anderen wählen.")
             elif not valid_name(pseudo_c):
                 st.error("Ungültiges Pseudonym. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
             else:
@@ -491,7 +551,7 @@ def page_gruppen_dashboard():
     gruppe_param = params.get("gruppe", "")
 
     cur.execute("SELECT DISTINCT gruppe FROM pulse_checks ORDER BY gruppe")
-    gruppen = [r[0] for r in cur.fetchall()]
+    gruppen = sort_demo_last([r[0] for r in cur.fetchall()])
     if not gruppen:
         st.markdown("# Gruppen-Dashboard")
         st.info("Noch keine Daten vorhanden.")
@@ -694,7 +754,7 @@ def page_gesamt_dashboard():
 
 def render_registrierungen_tab(conn, cur):
     cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
-    existing_groups = [r[0] for r in cur.fetchall()]
+    existing_groups = filter_out_demo([r[0] for r in cur.fetchall()])
 
     cur.execute("""
         SELECT id, vorname, email, wunschgruppe, pseudo, created_at
@@ -747,6 +807,8 @@ def render_registrierungen_tab(conn, cur):
                     final_gruppe = new_gruppe_in.strip() if gruppe_choice == NEW_GROUP_OPT else gruppe_choice
                     if not valid_name(final_gruppe):
                         st.error("Ungültiger Gruppenname.")
+                    elif is_reserved_group(final_gruppe):
+                        st.error("Dieser Gruppenname ist reserviert.")
                     elif not valid_name(pseudo):
                         st.error("Ungültiges Pseudonym in der Registrierung.")
                     else:
@@ -775,7 +837,7 @@ def render_registrierungen_tab(conn, cur):
 
 def render_teilnehmer_tab(conn, cur):
     cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
-    existing_groups = [r[0] for r in cur.fetchall()]
+    existing_groups = filter_out_demo([r[0] for r in cur.fetchall()])
     options = ([NEW_GROUP_OPT] + existing_groups) if existing_groups else [NEW_GROUP_OPT]
 
     st.markdown("#### Teilnehmer hinzufügen")
@@ -796,6 +858,8 @@ def render_teilnehmer_tab(conn, cur):
                 st.error("Alle Felder ausfüllen.")
             elif not valid_name(gruppe):
                 st.error("Ungültiger Gruppenname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
+            elif is_reserved_group(gruppe):
+                st.error("Dieser Gruppenname ist reserviert.")
             elif not valid_name(pseudo_c):
                 st.error("Ungültiges Pseudonym. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
             elif not valid_email(email_c):
@@ -817,7 +881,10 @@ def render_teilnehmer_tab(conn, cur):
                         st.error("Dieses Pseudonym ist in dieser Gruppe bereits vergeben.")
 
     st.markdown("#### Teilnehmer-Liste")
-    cur.execute("SELECT pseudo, gruppe, email, active, token FROM teilnehmer ORDER BY gruppe, pseudo")
+    cur.execute(
+        "SELECT pseudo, gruppe, email, active, token FROM teilnehmer WHERE gruppe <> %s ORDER BY gruppe, pseudo",
+        [DEMO_GRUPPE]
+    )
     tcols = [d[0] for d in cur.description]
     teilnehmer = pd.DataFrame(cur.fetchall(), columns=tcols)
     if teilnehmer.empty:
@@ -849,7 +916,7 @@ def render_teilnehmer_tab(conn, cur):
 
 def render_reminder_tab(conn, cur):
     cur.execute("SELECT DISTINCT gruppe FROM teilnehmer WHERE active = true ORDER BY gruppe")
-    reminder_gruppen = [r[0] for r in cur.fetchall()]
+    reminder_gruppen = filter_out_demo([r[0] for r in cur.fetchall()])
     if not reminder_gruppen:
         st.info("Keine aktiven Teilnehmer vorhanden.")
         return
