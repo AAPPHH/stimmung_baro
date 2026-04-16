@@ -593,25 +593,54 @@ def line_area_chart(x, y, color="#2563EB", y_range=(1, 5)):
 def page_gruppen_dashboard():
     conn = get_db()
     cur = conn.cursor()
-    params = st.query_params
-    gruppe_param = params.get("gruppe", "")
 
-    cur.execute("SELECT DISTINCT gruppe FROM pulse_checks ORDER BY gruppe")
+    token = st.query_params.get("token", "").strip()
+    is_admin = st.session_state.get("auth_admin", False)
+
+    user_gruppe = None
+    if token:
+        cur.execute("SELECT gruppe FROM teilnehmer WHERE token = %s AND active = true", [token])
+        row = cur.fetchone()
+        if row:
+            user_gruppe = row[0]
+
+    if is_admin:
+        cur.execute("SELECT DISTINCT gruppe FROM pulse_checks ORDER BY gruppe")
+        allowed = sort_demo_last([r[0] for r in cur.fetchall()])
+    elif user_gruppe:
+        allowed = sort_demo_last(list({user_gruppe, DEMO_GRUPPE}))
+    else:
+        st.markdown("# Gruppen-Dashboard")
+        st.markdown(
+            '<div class="alert-warn">Zugriff nur mit persönlichem Link aus deiner Einladungsmail '
+            'oder als Admin. Du siehst hier nur die Daten deiner eigenen Gruppe.</div>',
+            unsafe_allow_html=True
+        )
+        allowed = [DEMO_GRUPPE]
+
+    cur.execute("SELECT DISTINCT gruppe FROM pulse_checks WHERE gruppe = ANY(%s) ORDER BY gruppe", [allowed])
     gruppen = sort_demo_last([r[0] for r in cur.fetchall()])
     if not gruppen:
         st.markdown("# Gruppen-Dashboard")
         st.info("Noch keine Daten vorhanden.")
         return
 
+    gruppe_param = st.query_params.get("gruppe", "")
     if gruppe_param and gruppe_param in gruppen:
         idx = gruppen.index(gruppe_param)
+    elif user_gruppe and user_gruppe in gruppen:
+        idx = gruppen.index(user_gruppe)
     elif DEMO_GRUPPE in gruppen:
         idx = gruppen.index(DEMO_GRUPPE)
     else:
         idx = 0
+
     top1, top2 = st.columns([3, 1])
     with top2:
-        gruppe = st.selectbox("Gruppe", gruppen, index=idx, label_visibility="collapsed")
+        if len(gruppen) > 1:
+            gruppe = st.selectbox("Gruppe", gruppen, index=idx, label_visibility="collapsed")
+        else:
+            gruppe = gruppen[0]
     with top1:
         st.markdown(f"# {gruppe}")
         st.markdown('<p class="subtle">Stimmungsverlauf und Team-Signale</p>', unsafe_allow_html=True)
