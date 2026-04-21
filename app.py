@@ -384,7 +384,7 @@ def send_welcome_email(pseudo, email, token):
         msg["Subject"] = "Willkommen beim Stimmungsbarometer"
         msg["From"] = gmail_user
         msg["To"] = email
-        smtp = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+        smtp = smtplib.SMTP_SSL("mail.gmx.net", 465)
         smtp.login(gmail_user, gmail_pass)
         smtp.sendmail(gmail_user, email, msg.as_string())
         smtp.quit()
@@ -393,7 +393,7 @@ def send_welcome_email(pseudo, email, token):
         return False, str(e)
 
 
-REG_KEYS = ["reg_vorname", "reg_email", "reg_wg", "reg_newg", "reg_pseudo", "reg_consent"]
+REG_KEYS = ["reg_vorname", "reg_email", "reg_wg", "reg_pseudo", "reg_consent"]
 
 
 def render_registrierung():
@@ -422,15 +422,20 @@ def render_registrierung():
 
     cur.execute("SELECT DISTINCT gruppe FROM teilnehmer ORDER BY gruppe")
     existing_groups = filter_out_demo([r[0] for r in cur.fetchall()])
-    options = ([NEW_GROUP_OPT] + existing_groups) if existing_groups else [NEW_GROUP_OPT]
+
+    if not existing_groups:
+        st.markdown(
+            '<div class="alert-warn">Derzeit sind keine Gruppen verfügbar. Bitte wende dich an den Administrator.</div>',
+            unsafe_allow_html=True
+        )
+        return
 
     c1, c2 = st.columns(2)
     with c1:
         vorname = st.text_input("Vorname", placeholder="Dein Vorname", key="reg_vorname")
         email = st.text_input("E-Mail", placeholder="name@beispiel.de", key="reg_email")
     with c2:
-        wunschgruppe_sel = st.selectbox("Wunschgruppe", options, index=1 if existing_groups else 0, key="reg_wg")
-        new_gruppe = st.text_input("Neue Gruppe", placeholder="z.B. Delta", disabled=(wunschgruppe_sel != NEW_GROUP_OPT), key="reg_newg")
+        wunschgruppe_sel = st.selectbox("Wunschgruppe", existing_groups, key="reg_wg")
     pseudo = st.text_input("Pseudonym", placeholder="Wird im Dashboard statt deinem Klarnamen angezeigt", key="reg_pseudo")
 
     cc1, cc2 = st.columns([5, 2])
@@ -446,7 +451,7 @@ def render_registrierung():
     )
 
     if st.button("Anmeldung absenden", use_container_width=True, type="primary", disabled=not consent, key="reg_submit"):
-        wunschgruppe = new_gruppe.strip() if wunschgruppe_sel == NEW_GROUP_OPT else wunschgruppe_sel
+        wunschgruppe = wunschgruppe_sel
         vorname_c = vorname.strip()
         email_c = email.strip()
         pseudo_c = pseudo.strip()
@@ -457,10 +462,6 @@ def render_registrierung():
             st.error("Ungültiger Vorname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
         elif not valid_email(email_c):
             st.error("Ungültige E-Mail-Adresse.")
-        elif not valid_name(wunschgruppe):
-            st.error("Ungültiger Gruppenname. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
-        elif is_reserved_group(wunschgruppe):
-            st.error("Dieser Gruppenname ist reserviert. Bitte einen anderen wählen.")
         elif not valid_name(pseudo_c):
             st.error("Ungültiges Pseudonym. Nur Buchstaben, Zahlen, Leerzeichen und Bindestriche erlaubt.")
         else:
@@ -968,7 +969,10 @@ def render_teilnehmer_tab(conn, cur):
         with group_tabs[i]:
             gt = teilnehmer[teilnehmer["gruppe"] == gname].reset_index(drop=True)
             for _, row in gt.iterrows():
-                c1, c2, c3 = st.columns([3, 4, 1.2])
+                row_id = f"{row['pseudo']}__{row['gruppe']}"
+                pending_del = st.session_state.get("pending_del_t")
+
+                c1, c2, c3, c4 = st.columns([3, 3.2, 1.4, 1.4])
                 dot_class = "on" if row["active"] else "off"
                 status_text = "Aktiv" if row["active"] else "Inaktiv"
                 c1.markdown(
@@ -976,12 +980,28 @@ def render_teilnehmer_tab(conn, cur):
                     unsafe_allow_html=True
                 )
                 c2.markdown(f'<span style="color:#94A3B8">{row["email"]}</span>', unsafe_allow_html=True)
-                if row["active"]:
-                    if c3.button("Deaktivieren", key=f"deact_{row['pseudo']}_{row['gruppe']}", use_container_width=True):
+
+                if pending_del == row_id:
+                    if c3.button("Bestätigen", key=f"confirm_del_{row_id}", use_container_width=True, type="primary"):
                         cur.execute(
-                            "UPDATE teilnehmer SET active = false WHERE pseudo = %s AND gruppe = %s",
+                            "DELETE FROM teilnehmer WHERE pseudo = %s AND gruppe = %s",
                             [row["pseudo"], row["gruppe"]]
                         )
+                        st.session_state.pop("pending_del_t", None)
+                        st.rerun()
+                    if c4.button("Abbrechen", key=f"cancel_del_{row_id}", use_container_width=True):
+                        st.session_state.pop("pending_del_t", None)
+                        st.rerun()
+                else:
+                    if row["active"]:
+                        if c3.button("Deaktivieren", key=f"deact_{row_id}", use_container_width=True):
+                            cur.execute(
+                                "UPDATE teilnehmer SET active = false WHERE pseudo = %s AND gruppe = %s",
+                                [row["pseudo"], row["gruppe"]]
+                            )
+                            st.rerun()
+                    if c4.button("🗑 Löschen", key=f"del_{row_id}", use_container_width=True):
+                        st.session_state["pending_del_t"] = row_id
                         st.rerun()
 
 
@@ -1019,7 +1039,7 @@ def render_reminder_tab(conn, cur):
         all_errors = []
         with st.spinner("Sende Reminder..."):
             try:
-                smtp = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+                smtp = smtplib.SMTP_SSL("mail.gmx.net", 465)
                 smtp.login(gmail_user, gmail_pass)
             except Exception as e:
                 st.error(f"SMTP-Fehler: {e}")
@@ -1060,12 +1080,61 @@ def render_reminder_tab(conn, cur):
                 st.warning(err)
 
 
+def render_checkins_tab(conn, cur):
+    cur.execute("SELECT DISTINCT gruppe FROM pulse_checks ORDER BY gruppe")
+    groups = filter_out_demo([r[0] for r in cur.fetchall()])
+    if not groups:
+        st.info("Noch keine Check-Ins vorhanden.")
+        return
+
+    sel_group = st.selectbox("Gruppe", groups, key="ci_group")
+
+    cur.execute("SELECT pseudo FROM teilnehmer WHERE gruppe = %s", [sel_group])
+    pseudo_map = {hash_pseudo(r[0]): r[0] for r in cur.fetchall()}
+
+    cur.execute(
+        """SELECT id, submitted_at, anon_token, stimmung, workload, kommunikation
+           FROM pulse_checks WHERE gruppe = %s ORDER BY submitted_at DESC LIMIT 100""",
+        [sel_group]
+    )
+    rows = cur.fetchall()
+    if not rows:
+        st.info("Keine Check-Ins für diese Gruppe.")
+        return
+
+    st.caption(f"Neueste {len(rows)} Check-Ins — zum Löschen falsch eingetragener Abgaben")
+
+    pending_del_ci = st.session_state.get("pending_del_ci")
+    for cid, submitted_at, anon_token, stimmung, workload, kommunikation in rows:
+        pseudo = pseudo_map.get(anon_token, "—")
+        c1, c2, c3, c4, c5 = st.columns([2.5, 2.3, 2, 1.4, 1.4])
+        c1.markdown(
+            f'**{pseudo}**  \n<span style="color:#94A3B8;font-size:12px;">{submitted_at.strftime("%d.%m.%Y %H:%M")}</span>',
+            unsafe_allow_html=True
+        )
+        c2.markdown(f"Stimmung: **{stimmung}**  \nKomm: **{kommunikation}**")
+        c3.markdown(f"Workload: **{workload}**")
+
+        if pending_del_ci == cid:
+            if c4.button("Bestätigen", key=f"ci_ok_{cid}", use_container_width=True, type="primary"):
+                cur.execute("DELETE FROM pulse_checks WHERE id = %s", [cid])
+                st.session_state.pop("pending_del_ci", None)
+                st.rerun()
+            if c5.button("Abbrechen", key=f"ci_x_{cid}", use_container_width=True):
+                st.session_state.pop("pending_del_ci", None)
+                st.rerun()
+        else:
+            if c5.button("🗑 Löschen", key=f"ci_del_{cid}", use_container_width=True):
+                st.session_state["pending_del_ci"] = cid
+                st.rerun()
+
+
 def page_verwaltung():
     if not admin_check("Verwaltung"):
         return
 
     st.markdown("# Verwaltung")
-    st.markdown('<p class="subtle">Registrierungen, Teilnehmer und Reminder</p>', unsafe_allow_html=True)
+    st.markdown('<p class="subtle">Registrierungen, Teilnehmer, Check-Ins und Reminder</p>', unsafe_allow_html=True)
 
     conn = get_db()
     cur = conn.cursor()
@@ -1074,12 +1143,14 @@ def page_verwaltung():
     pending_count = cur.fetchone()[0]
 
     reg_label = f"📥 Registrierungen ({pending_count})" if pending_count else "📥 Registrierungen"
-    tabs = st.tabs([reg_label, "👥 Teilnehmer", "📧 Reminder"])
+    tabs = st.tabs([reg_label, "👥 Teilnehmer", "📊 Check-Ins", "📧 Reminder"])
     with tabs[0]:
         render_registrierungen_tab(conn, cur)
     with tabs[1]:
         render_teilnehmer_tab(conn, cur)
     with tabs[2]:
+        render_checkins_tab(conn, cur)
+    with tabs[3]:
         render_reminder_tab(conn, cur)
 
 
@@ -1101,6 +1172,10 @@ E-Mail: jfhamelmann@gmail.com
         "Studentisches Projekt im Rahmen des Studiengangs **Data Science (B.Sc.)** "
         "an der Hochschule Düsseldorf. Betreut durch "
         "**Prof. Dr. Dennis Müller** und **Prof. Dr. Dominik Austermann**."
+    )
+    st.markdown(
+        "Beim Rollout unterstützt durch **Yannik Huber** (Studiengang Data Science, HSD) — "
+        "E-Mail: yannik.huber@study.hs-duesseldorf.de."
     )
 
     st.divider()
