@@ -1,4 +1,5 @@
 /.claude
+/.code-review-graph
 .streamlit/secrets.toml
 __pycache__/
 *.pyc

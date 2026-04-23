@@ -27,9 +27,11 @@ Werte ausfüllen:
 |-----|-------------|
 | `DATABASE_URL` | Supabase PostgreSQL Connection String |
 | `ADMIN_PASS` | Passwort für Admin-Seiten |
-| `GMAIL_USER` | Gmail-Adresse für Reminder |
-| `GMAIL_APP_PASS` | Gmail App-Passwort ([Anleitung](https://support.google.com/accounts/answer/185833)) |
+| `GMAIL_USER` | Absender-Adresse für Reminder (trotz Name — beliebiger SMTP-Login) |
+| `GMAIL_APP_PASS` | App-Passwort des Absender-Kontos |
 | `APP_URL` | Öffentliche URL der App |
+| `SMTP_HOST` | SMTP-Server (optional, Default `mail.gmx.net` — für Gmail: `smtp.gmail.com`) |
+| `SMTP_PORT` | SMTP-Port (optional, Default `465`) |
 
 ### 4. Testdaten laden
 
